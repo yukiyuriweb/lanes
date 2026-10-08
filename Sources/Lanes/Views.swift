@@ -775,6 +775,7 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         lastTable = table
 
         // Boxes, outermost first: quotes get a bar on the left, code blocks a tinted box, table cells borders.
+        let knownBoxes = Set(textBlocks.keys)
         var boxes: [NSTextBlock] = []
         var isHeaderRow = false
         for component in blocks.reversed() {
@@ -876,7 +877,18 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
             return false
         }
         if boxed, let outer = boxes.first {
-            if spaceBefore > 0 { outer.setWidth(spaceBefore, type: .absoluteValueType, for: .margin, edge: .minY) }
+            if spaceBefore > 0, let id = blocks.last(where: { textBlocks[$0.identity] === outer })?.identity {
+                // A quote can go on after a table inside it. Its part before the table keeps the box it has,
+                // and the rest gets a copy, so the margin doesn't add space above the whole quote.
+                var spaced = outer
+                if knownBoxes.contains(id) {
+                    spaced = outer.copy() as! NSTextBlock
+                    textBlocks[id] = spaced
+                    boxes[0] = spaced
+                    para.textBlocks = container + boxes
+                }
+                spaced.setWidth(spaceBefore, type: .absoluteValueType, for: .margin, edge: .minY)
+            }
         } else {
             para.paragraphSpacingBefore = max(para.paragraphSpacingBefore, spaceBefore)
         }
