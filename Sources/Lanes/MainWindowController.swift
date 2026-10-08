@@ -23,6 +23,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var commits: [Commit] = []
     private var rows: [GraphRow] = []
     private var files: [ChangedFile] = []
+    /// Pull requests by the commit they're shown on (see `PullRequest.commitHash`).
+    private var pullRequests: [String: [PullRequest]] = [:]
+    /// The selected commit's pull requests, listed between "Commit Details" and the files.
+    private var detailPRs: [PullRequest] = []
     private var summaryText = NSAttributedString()
     /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
@@ -30,6 +34,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var textToken = 0
     /// Bumped on each history reload, so an older reload can't overwrite a newer one.
     private var loadToken = 0
+    /// Bumped on each pull request fetch, so an older fetch can't overwrite a newer one.
+    private var prToken = 0
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -140,6 +146,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         window?.subtitle = top.path
         commits = []
         rows = []
+        pullRequests = [:]
         commitTable.reloadData()
         reload()
     }
@@ -158,6 +165,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 self.apply(commits: commits, layout: layout, selecting: selectedHash)
             }
         }
+        // Fetched separately so the graph never waits on the network.
+        prToken += 1
+        let prToken = prToken
+        Task.detached {
+            let prs = GitHub.pullRequests(in: repo)
+            await MainActor.run {
+                guard prToken == self.prToken, repo == self.repo else { return }
+                self.apply(pullRequests: prs ?? [])
+            }
+        }
+    }
+
+    private func apply(pullRequests prs: [PullRequest]) {
+        pullRequests = Dictionary(grouping: prs, by: \.commitHash)
+        let col = commitTable.column(withIdentifier: .description)
+        if col >= 0 { commitTable.reloadData(forRowIndexes: IndexSet(integersIn: 0..<commits.count), columnIndexes: [col]) }
+
+        // Refresh the selected commit's PR rows, keeping the same file or PR selected.
+        guard commitTable.selectedRow >= 0 else { return }
+        let old = detailPRs
+        detailPRs = pullRequests[commits[commitTable.selectedRow].hash] ?? []
+        let selected = fileTable.selectedRow
+        fileTable.reloadData()
+        guard selected >= 0 else { return }   // details still loading; they select a row when done
+        let row = selected > old.count ? selected - old.count + detailPRs.count   // a file
+            : selected > detailPRs.count ? 0                                       // a PR that's gone
+            : selected
+        fileTable.selectRowIndexes([row], byExtendingSelection: false)
+        // Selecting the same row again doesn't notify, so redraw an open PR with its new data here.
+        if row == selected && row >= 1 && row <= detailPRs.count { showPullRequest(detailPRs[row - 1]) }
     }
 
     private func apply(commits: [Commit], layout: (rows: [GraphRow], width: Int), selecting hash: String?) {
@@ -182,6 +219,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         textToken += 1
         let token = detailToken
         files = []
+        detailPRs = []
         summaryText = NSAttributedString()
         fileTable.reloadData()
         textView.string = ""
@@ -192,6 +230,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             await MainActor.run {
                 guard token == self.detailToken else { return }
                 self.files = files
+                self.detailPRs = self.pullRequests[commit.hash] ?? []
                 self.summaryText = NSAttributedString(string: summary, attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                     .foregroundColor: NSColor.labelColor,
@@ -218,12 +257,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
     }
 
+    private func showPullRequest(_ pr: PullRequest) {
+        textToken += 1
+        setText(renderPullRequest(pr, dateFormatter: dateFormatter), wraps: true)
+    }
+
     private func showSummary() {
         textToken += 1
         setText(summaryText)
     }
 
-    private func setText(_ text: NSAttributedString) {
+    /// Diffs and summaries scroll horizontally; prose (PR conversations) wraps to the pane's width.
+    private func setText(_ text: NSAttributedString, wraps: Bool = false) {
+        textView.isHorizontallyResizable = !wraps
+        textView.textContainer?.widthTracksTextView = wraps
+        if wraps {
+            textView.frame.size.width = textScroll.contentSize.width
+        } else {
+            textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        }
         textView.textStorage?.setAttributedString(text)
         textView.scroll(.zero)
     }
@@ -231,7 +283,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     // MARK: - Table data source / delegate
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === commitTable ? commits.count : (commits.isEmpty ? 0 : files.count + 1)
+        tableView === commitTable ? commits.count : (commits.isEmpty ? 0 : 1 + detailPRs.count + files.count)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -243,8 +295,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             if row == 0 {
                 cell.textField?.attributedStringValue = NSAttributedString(
                     string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
+            } else if row <= detailPRs.count {
+                let pr = detailPRs[row - 1]
+                cell.textField?.attributedStringValue = NSAttributedString(
+                    string: String(localized: "Pull Request #\(pr.number)"),
+                    attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: prColor(pr)])
+                cell.toolTip = pr.title
             } else {
-                let f = files[row - 1]
+                let f = files[row - 1 - detailPRs.count]
                 let s = NSMutableAttributedString(string: f.status + "  ", attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold),
                     .foregroundColor: statusColor(f.status),
@@ -275,6 +333,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             }()
             cell.color = Palette.color(rows[row].color)
             cell.commit = commit
+            cell.pullRequests = pullRequests[commit.hash] ?? []
             cell.toolTip = commit.subject
             return cell
         default:
@@ -299,8 +358,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             showDetails(table.selectedRow >= 0 ? commits[table.selectedRow] : nil)
         } else if table.selectedRow == 0 {
             showSummary()
+        } else if table.selectedRow > 0 && table.selectedRow <= detailPRs.count {
+            showPullRequest(detailPRs[table.selectedRow - 1])
         } else if table.selectedRow > 0 {
-            showFileDiff(files[table.selectedRow - 1])
+            showFileDiff(files[table.selectedRow - 1 - detailPRs.count])
         }
     }
 
