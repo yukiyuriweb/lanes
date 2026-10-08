@@ -215,6 +215,81 @@ func prStateName(_ pr: PullRequest) -> String {
     }
 }
 
+/// A rectangle's outline with rounded top and/or bottom corners.
+private func roundedRect(_ r: NSRect, top: CGFloat, bottom: CGFloat) -> NSBezierPath {
+    let p = NSBezierPath()
+    p.move(to: NSPoint(x: r.minX, y: r.minY + top))
+    p.appendArc(from: NSPoint(x: r.minX, y: r.minY), to: NSPoint(x: r.minX + top, y: r.minY), radius: top)
+    p.appendArc(from: NSPoint(x: r.maxX, y: r.minY), to: NSPoint(x: r.maxX, y: r.minY + top), radius: top)
+    p.appendArc(from: NSPoint(x: r.maxX, y: r.maxY), to: NSPoint(x: r.maxX - bottom, y: r.maxY), radius: bottom)
+    p.appendArc(from: NSPoint(x: r.minX, y: r.maxY), to: NSPoint(x: r.minX, y: r.maxY - bottom), radius: bottom)
+    p.close()
+    return p
+}
+
+/// A card: a one-column table with rounded corners, drawn here since text tables only draw square borders.
+/// (Markdown tables inside it can only nest in a table cell; inside a plain NSTextBlock AppKit throws while
+/// drawing them.)
+final class CardTable: NSTextTable {
+    var rows = 1
+    var fills: [Int: NSColor] = [:]
+    private let radius: CGFloat = 6
+
+    override func drawBackground(for block: NSTextTableBlock, withFrame frameRect: NSRect, in controlView: NSView?,
+                                 characterRange: NSRange, layoutManager: NSLayoutManager) {
+        let first = block.startingRow == 0, last = block.startingRow == rows - 1
+        let r = frameRect.insetBy(dx: 0.5, dy: 0)
+        let top = r.minY + (first ? 0.5 : 0), bottom = r.maxY - (last ? 0.5 : 0)
+        let shape = NSRect(x: r.minX, y: top, width: r.width, height: bottom - top)
+        if let fill = fills[block.startingRow] {
+            fill.setFill()
+            roundedRect(shape, top: first ? radius : 0, bottom: last ? radius : 0).fill()
+        }
+        // Each row draws its sides and bottom; only the first draws a top, so rules between rows stay single.
+        let outline: NSBezierPath
+        if first {
+            outline = roundedRect(shape, top: radius, bottom: last ? radius : 0)
+        } else {
+            outline = NSBezierPath()
+            let br = last ? radius : 0
+            outline.move(to: NSPoint(x: shape.minX, y: shape.minY))
+            outline.line(to: NSPoint(x: shape.minX, y: shape.maxY - br))
+            if br > 0 { outline.appendArc(from: NSPoint(x: shape.minX, y: shape.maxY), to: NSPoint(x: shape.minX + br, y: shape.maxY), radius: br) }
+            outline.line(to: NSPoint(x: shape.maxX - br, y: shape.maxY))
+            if br > 0 { outline.appendArc(from: NSPoint(x: shape.maxX, y: shape.maxY), to: NSPoint(x: shape.maxX, y: shape.maxY - br), radius: br) }
+            outline.line(to: NSPoint(x: shape.maxX, y: shape.minY))
+        }
+        NSColor.separatorColor.setStroke()
+        outline.lineWidth = 1
+        outline.stroke()
+    }
+}
+
+/// A box with a rounded, tinted background, for code blocks.
+final class RoundedBlock: NSTextBlock {
+    var fill: NSColor = .clear
+
+    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange,
+                                 layoutManager: NSLayoutManager) {
+        let r = NSRect(x: frameRect.minX + width(for: .margin, edge: .minX), y: frameRect.minY + width(for: .margin, edge: .minY),
+                       width: frameRect.width - width(for: .margin, edge: .minX) - width(for: .margin, edge: .maxX),
+                       height: frameRect.height - width(for: .margin, edge: .minY) - width(for: .margin, edge: .maxY))
+        fill.setFill()
+        roundedRect(r, top: 6, bottom: 6).fill()
+    }
+}
+
+/// A box drawing a rule under its text, for major headings.
+private func ruleBelow() -> NSTextBlock {
+    let b = NSTextBlock()
+    b.setValue(100, type: .percentageValueType, for: .width)
+    b.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
+    b.setBorderColor(.separatorColor, for: .maxY)
+    b.setWidth(TextSize.pt(5), type: .absoluteValueType, for: .padding, edge: .maxY)
+    b.setWidth(TextSize.pt(8), type: .absoluteValueType, for: .margin, edge: .maxY)
+    return b
+}
+
 /// The PR and its conversation as text: reviews and comments in time order, then the review threads.
 /// The PR and its conversation as text: the description, reviews and comments in time order, then the review
 /// threads. Each is a bordered card with a tinted header naming who wrote it, like on GitHub.
@@ -237,38 +312,36 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     func section(_ title: String) {
         gap()
-        line([(title, .boldSystemFont(ofSize: TextSize.pt(13)), .labelColor, nil)], spacing: 8)
+        line([(title, .boldSystemFont(ofSize: TextSize.pt(14)), .labelColor, nil)], in: [ruleBelow()])
     }
     /// Space below a card; the table's own bottom margin isn't applied between adjacent tables.
     func gap() {
         result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(14))]))
     }
-    // A card is a one-column table: its header and each post or comment are rows. (Markdown tables inside
-    // it can only nest in a table cell; inside a plain NSTextBlock AppKit throws while drawing them.)
-    func card() -> NSTextTable {
-        let t = NSTextTable()
+    /// A card with `rows` rows (a header, then posts or comments); thread cards sit one level in.
+    func card(rows: Int, indented: Bool = false) -> CardTable {
+        let t = CardTable()
         t.numberOfColumns = 1
-        t.collapsesBorders = true
+        t.rows = rows
         t.setValue(100, type: .percentageValueType, for: .width)
+        if indented { t.setWidth(TextSize.pt(24), type: .absoluteValueType, for: .margin, edge: .minX) }
         return t
     }
-    func row(_ card: NSTextTable, _ index: Int, header: Bool = false) -> NSTextTableBlock {
+    func row(_ card: CardTable, _ index: Int, header: Bool = false) -> NSTextTableBlock {
         let b = NSTextTableBlock(table: card, startingRow: index, rowSpan: 1, startingColumn: 0, columnSpan: 1)
-        b.setWidth(1, type: .absoluteValueType, for: .border)
-        b.setBorderColor(.separatorColor)
+        if header { card.fills[index] = NSColor.labelColor.withAlphaComponent(0.05) }
         b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .minX)
         b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .maxX)
         b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .minY)
         b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .maxY)
-        if header { b.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05) }
         return b
     }
     /// Who and when, in a card's header (or above a comment inside a thread card).
-    func byline(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, in boxes: [NSTextBlock]) {
+    func byline(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, in boxes: [NSTextBlock], spacing: CGFloat = 0) {
         var parts: [(String, NSFont, NSColor, String?)] = [(who?.login ?? "ghost", bold, .labelColor, nil)]
         if let what { parts.append(("  " + what.0, bold, what.1, nil)) }
         if let date { parts.append(("  " + dateFormatter.string(from: date), body, .secondaryLabelColor, nil)) }
-        line(parts, in: boxes)
+        line(parts, in: boxes, spacing: spacing)
     }
     // <head repository>/blob/<head branch>/: the fork for a PR from a fork. If the fork is gone, the base
     // repository, taken from https://github.com/<owner>/<repo>/pull/<n>.
@@ -290,9 +363,10 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     /// A card: a header line, then the body (if any).
     func post(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, _ text: String) {
-        let c = card()
+        let hasBody = !plainText(text).isEmpty
+        let c = card(rows: hasBody ? 2 : 1)
         byline(who, what, date, in: [row(c, 0, header: true)])
-        if !plainText(text).isEmpty { markdown(text, in: [row(c, 1)]) }
+        if hasBody { markdown(text, in: [row(c, 1)]) }
         gap()
     }
     func more(_ n: Int) {
@@ -330,7 +404,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     for t in threads {
         let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
-        let c = card()
+        let c = card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indented: true)
         let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .semibold)
         if t.isResolved {
             line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
@@ -341,7 +415,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         line([(location, mono, .labelColor, nil)], in: [row(c, 0, header: true)])
         for (i, comment) in t.comments.nodes.enumerated() {
             let cell = row(c, i + 1)
-            byline(comment.author, nil, comment.createdAt, in: [cell])
+            byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pt(6))
             markdown(comment.body, in: [cell])
         }
         if t.comments.hidden > 0 {
@@ -496,13 +570,15 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
                 })
             case .codeBlock:
                 boxes.append(box(component.identity) {
-                    let b = NSTextBlock()
-                    b.backgroundColor = tint
-                    b.setWidth(8, type: .absoluteValueType, for: .padding)
-                    b.setWidth(4, type: .absoluteValueType, for: .margin, edge: .maxY)
+                    let b = RoundedBlock()
+                    b.fill = tint
+                    b.setWidth(TextSize.pt(10), type: .absoluteValueType, for: .padding)
+                    b.setWidth(TextSize.pt(10), type: .absoluteValueType, for: .margin, edge: .maxY)
                     b.setValue(100, type: .percentageValueType, for: .width)
                     return b
                 })
+            case .header(let level) where level <= 2:
+                boxes.append(box(component.identity) { ruleBelow() })   // like GitHub's h1 and h2
             case .table(let columns):
                 // A table can only sit directly in a table cell (here: the card's), not in a quote or code box.
                 boxes.removeAll { !($0 is NSTextTableBlock) }
@@ -548,12 +624,20 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         let left = CGFloat(listDepth) * 16
         para.firstLineHeadIndent = left
         para.headIndent = left + (listDepth > 0 ? 14 : 0)   // wrapped list lines align after the marker
-        para.paragraphSpacing = boxes.isEmpty ? 4 : 0
+        // Room between paragraphs and lines, like GitHub; less between list items, none inside code and tables.
+        let inCodeOrTable = blocks.contains { c in
+            if case .codeBlock = c.kind { return true }
+            if case .tableCell = c.kind { return true }
+            return false
+        }
+        para.paragraphSpacing = inCodeOrTable ? 0 : listDepth > 0 ? font.pointSize * 0.35 : font.pointSize * 0.75
+        if !inCodeOrTable { para.lineHeightMultiple = 1.2 }
         para.textBlocks = container + boxes   // inside the card it belongs to
         switch blocks.first?.kind {
         case .header(let level)?:
             runFont = .boldSystemFont(ofSize: font.pointSize + [6, 4, 2, 1, 0, 0][min(max(level, 1), 6) - 1])
-            para.paragraphSpacingBefore = 6
+            para.paragraphSpacingBefore = out.length > 0 ? font.pointSize : 0
+            para.paragraphSpacing = font.pointSize * 0.5
         case .codeBlock?:
             runFont = mono
             while text.hasSuffix("\n") { text.removeLast() }
@@ -589,5 +673,12 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         lastAttrs = plain
     }
     if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: lastAttrs)) }
+    // No space after the last paragraph, so a card's padding is the same above and below its text.
+    let last = (out.string as NSString).paragraphRange(for: NSRange(location: max(out.length - 1, 0), length: 0))
+    out.enumerateAttribute(.paragraphStyle, in: last) { value, range, _ in
+        guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
+        style.paragraphSpacing = 0
+        out.addAttribute(.paragraphStyle, value: style, range: range)
+    }
     return out
 }
