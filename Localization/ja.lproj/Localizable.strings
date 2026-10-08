@@ -45,3 +45,14 @@
 "Actual Size" = "実際のサイズ";
 "Bigger" = "拡大";
 "Smaller" = "縮小";
+
+/* Commit details */
+"Committed by" = "コミット:";
+"committed" = "コミット";
+"commit" = "コミット";
+"parent" = "親";
+"parents" = "親";
+"1 file changed" = "1 ファイルを変更";
+"%lld files changed" = "%lld ファイルを変更";
+"binary" = "バイナリ";
+"%lld more files" = "ほか %lld ファイル";

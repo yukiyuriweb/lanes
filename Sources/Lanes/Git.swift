@@ -17,6 +17,29 @@ struct Commit {
     let subject: String
 }
 
+/// What the Commit Details pane shows about a commit.
+struct CommitSummary {
+    struct FileStat {
+        let path: String
+        let oldPath: String?
+        /// Lines added and deleted; nil for a binary file.
+        let added: Int?
+        let deleted: Int?
+    }
+    let hash: String
+    let parents: [String]
+    let author: String
+    let authorEmail: String
+    let authorDate: Date
+    let committer: String
+    let committerEmail: String
+    let committerDate: Date
+    let subject: String
+    /// The message after the subject line, trimmed.
+    let body: String
+    let files: [FileStat]
+}
+
 struct ChangedFile {
     let status: String   // A, M, D, R, C, T ...
     let path: String
@@ -132,11 +155,45 @@ enum Git {
         return files
     }
 
-    static func summary(of c: Commit, in repo: URL) -> String {
-        let fmt = "commit    %H%nparents   %P%nauthor    %an <%ae>  %ad%ncommitter %cn <%ce>  %cd%n%n%B"
-        let header = run(["show", "-s", "--date=format-local:%Y/%m/%d %H:%M:%S", "--format=\(fmt)", c.hash], in: repo) ?? ""
-        let stat = run(["diff", "--stat=200", "-M", base(of: c, in: repo), c.hash], in: repo) ?? ""
-        return header.trimmingCharacters(in: .newlines) + "\n\n" + stat
+    static func summary(of c: Commit, in repo: URL) -> CommitSummary? {
+        let fmt = "%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%B"
+        guard let out = run(["show", "-s", "--format=\(fmt)", c.hash], in: repo) else { return nil }
+        let f = out.components(separatedBy: "\u{1f}")
+        guard f.count == 9 else { return nil }
+        // The subject is the first paragraph, joined into one line, as git's %s does.
+        let message = f[8].trimmingCharacters(in: .whitespacesAndNewlines)
+        let split = message.range(of: "\n\n")
+        let subject = String(message[..<(split?.lowerBound ?? message.endIndex)])
+            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        let body = split.map { message[$0.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        return CommitSummary(
+            hash: f[0], parents: f[1].split(separator: " ").map(String.init),
+            author: f[2], authorEmail: f[3], authorDate: Date(timeIntervalSince1970: TimeInterval(f[4]) ?? 0),
+            committer: f[5], committerEmail: f[6], committerDate: Date(timeIntervalSince1970: TimeInterval(f[7]) ?? 0),
+            subject: subject, body: body, files: fileStats(of: c, in: repo))
+    }
+
+    /// Lines added and deleted per file, from `git diff --numstat -z`.
+    private static func fileStats(of c: Commit, in repo: URL) -> [CommitSummary.FileStat] {
+        guard let out = run(["diff", "--numstat", "-z", "-M", base(of: c, in: repo), c.hash], in: repo) else { return [] }
+        // Each entry is "added<TAB>deleted<TAB>path<NUL>", or for a rename "added<TAB>deleted<TAB><NUL>old<NUL>new<NUL>".
+        let parts = out.components(separatedBy: "\0")
+        var stats: [CommitSummary.FileStat] = []
+        var i = 0
+        while i < parts.count, !parts[i].isEmpty {
+            let f = parts[i].split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard f.count == 3 else { break }
+            let added = Int(f[0]), deleted = Int(f[1])
+            if f[2].isEmpty {
+                guard i + 2 < parts.count else { break }
+                stats.append(.init(path: parts[i + 2], oldPath: parts[i + 1], added: added, deleted: deleted))
+                i += 3
+            } else {
+                stats.append(.init(path: String(f[2]), oldPath: nil, added: added, deleted: deleted))
+                i += 1
+            }
+        }
+        return stats
     }
 
     static func diff(of c: Commit, file: ChangedFile, in repo: URL) -> String {
