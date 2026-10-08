@@ -924,5 +924,24 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         style.paragraphSpacing = 0
         out.addAttribute(.paragraphStyle, value: style, range: range)
     }
+    // AppKit measures a card's row from the boxes inside it when the text starts or ends in one (a code block,
+    // say), leaving out the row's padding there. A paragraph of almost no height, outside any box, keeps it.
+    func boxed(at i: Int) -> Bool {
+        ((out.attribute(.paragraphStyle, at: i, effectiveRange: nil) as? NSParagraphStyle)?.textBlocks.count ?? 0) > container.count
+    }
+    if out.length > 0 {
+        let spacer = NSMutableParagraphStyle()
+        spacer.textBlocks = container
+        spacer.minimumLineHeight = 0.1
+        spacer.maximumLineHeight = 0.1
+        let edge = NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: spacer])
+        if boxed(at: out.length - 1) {
+            // The row's padding is the space below the last box, as it is below text.
+            let style = out.attribute(.paragraphStyle, at: out.length - 1, effectiveRange: nil) as! NSParagraphStyle
+            style.textBlocks[container.count].setWidth(0, type: .absoluteValueType, for: .margin, edge: .maxY)
+            out.append(edge)
+        }
+        if boxed(at: 0) { out.insert(edge, at: 0) }
+    }
     return out
 }
