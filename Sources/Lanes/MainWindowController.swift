@@ -23,7 +23,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var rows: [GraphRow] = []
     private var files: [ChangedFile] = []
     private var summaryText = NSAttributedString()
+    /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
+    /// Bumped whenever the text pane is pointed at something else; guards diff loads.
+    private var textToken = 0
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -179,8 +182,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func showDetails(_ commit: Commit?) {
         detailToken += 1
+        textToken += 1
         let token = detailToken
         files = []
+        summaryText = NSAttributedString()
         fileTable.reloadData()
         textView.string = ""
         guard let commit, let repo else { return }
@@ -195,7 +200,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     .foregroundColor: NSColor.labelColor,
                 ])
                 self.fileTable.reloadData()
+                // Row 0 may have been clicked while loading, in which case no selection change fires.
                 self.fileTable.selectRowIndexes([0], byExtendingSelection: false)
+                self.showSummary()
             }
         }
     }
@@ -203,19 +210,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func showFileDiff(_ file: ChangedFile) {
         guard let repo, commitTable.selectedRow >= 0 else { return }
         let commit = commits[commitTable.selectedRow]
-        detailToken += 1
-        let token = detailToken
+        textToken += 1
+        let token = textToken
         Task.detached {
             let diff = Git.diff(of: commit, file: file, in: repo)
             await MainActor.run {
-                guard token == self.detailToken else { return }
+                guard token == self.textToken else { return }
                 self.setText(colorizeDiff(diff))
             }
         }
     }
 
     private func showSummary() {
-        detailToken += 1
+        textToken += 1
         setText(summaryText)
     }
 

@@ -113,11 +113,9 @@ func makeTextCell(_ id: NSUserInterfaceItemIdentifier, font: NSFont) -> NSTableC
 }
 
 func colorizeDiff(_ text: String) -> NSAttributedString {
-    let maxLength = 1_000_000
-    let body = text.count > maxLength ? String(text.prefix(maxLength)) + "\n… (truncated)\n" : text
     let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    let result = NSMutableAttributedString(string: body, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
-    let ns = body as NSString
+    let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+    let ns = text as NSString
     ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
         let line = ns.substring(with: NSRange(location: range.location, length: min(range.length, 4)))
         let color: NSColor?

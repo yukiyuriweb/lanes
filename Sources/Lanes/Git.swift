@@ -24,9 +24,13 @@ struct ChangedFile {
 }
 
 enum Git {
-    static let emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
     static func run(_ args: [String], in dir: URL) -> String? {
+        run(args, in: dir, limit: .max)?.output
+    }
+
+    /// Runs git and returns its stdout, or nil if git failed.
+    /// Stops reading (and kills git) once `limit` bytes have been read.
+    static func run(_ args: [String], in dir: URL, limit: Int) -> (output: String, truncated: Bool)? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "core.quotepath=false", "-c", "log.showSignature=false"] + args
@@ -35,10 +39,21 @@ enum Git {
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let handle = out.fileHandleForReading
+        var data = Data()
+        var truncated = false
+        while case let chunk = handle.availableData, !chunk.isEmpty {
+            data.append(chunk)
+            if data.count > limit {
+                truncated = true
+                data = data.prefix(limit)
+                p.terminate()
+                break
+            }
+        }
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return String(decoding: data, as: UTF8.self)
+        guard truncated || p.terminationStatus == 0 else { return nil }
+        return (String(decoding: data, as: UTF8.self), truncated)
     }
 
     static func topLevel(of dir: URL) -> URL? {
@@ -94,7 +109,7 @@ enum Git {
     }
 
     static func changedFiles(of c: Commit, in repo: URL) -> [ChangedFile] {
-        let base = c.parents.first ?? emptyTree
+        let base = base(of: c, in: repo)
         guard let out = run(["diff", "--name-status", "-z", "-M", base, c.hash], in: repo) else { return [] }
         let parts = out.components(separatedBy: "\0")
         var files: [ChangedFile] = []
@@ -117,13 +132,25 @@ enum Git {
     static func summary(of c: Commit, in repo: URL) -> String {
         let fmt = "commit    %H%nparents   %P%nauthor    %an <%ae>  %ad%ncommitter %cn <%ce>  %cd%n%n%B"
         let header = run(["show", "-s", "--date=format-local:%Y/%m/%d %H:%M:%S", "--format=\(fmt)", c.hash], in: repo) ?? ""
-        let stat = run(["diff", "--stat=200", "-M", c.parents.first ?? emptyTree, c.hash], in: repo) ?? ""
+        let stat = run(["diff", "--stat=200", "-M", base(of: c, in: repo), c.hash], in: repo) ?? ""
         return header.trimmingCharacters(in: .newlines) + "\n\n" + stat
     }
 
     static func diff(of c: Commit, file: ChangedFile, in repo: URL) -> String {
         var paths = [file.path]
         if let old = file.oldPath { paths.insert(old, at: 0) }
-        return run(["diff", "--no-color", "--no-ext-diff", "-M", c.parents.first ?? emptyTree, c.hash, "--"] + paths, in: repo) ?? ""
+        let limit = 2_000_000
+        guard let result = run(["diff", "--no-color", "--no-ext-diff", "-M", base(of: c, in: repo), c.hash, "--"] + paths,
+                               in: repo, limit: limit)
+        else { return "" }
+        return result.truncated ? result.output + "\n… (truncated at \(limit / 1_000_000) MB)\n" : result.output
+    }
+
+    /// What to diff a commit against: its first parent, or the empty tree for a root commit.
+    /// The empty tree's ID depends on the repository's object format (SHA-1 or SHA-256).
+    private static func base(of c: Commit, in repo: URL) -> String {
+        if let parent = c.parents.first { return parent }
+        return run(["hash-object", "-t", "tree", "/dev/null"], in: repo)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     }
 }
