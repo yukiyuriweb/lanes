@@ -287,22 +287,46 @@ final class RoundedBlock: NSTextBlock {
     }
 }
 
-/// `text` on a rounded pill of `color`, like GitHub's state labels, as an inline image.
-private func pill(_ text: String, color: NSColor, font: NSFont) -> NSAttributedString {
-    let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.white])
-    let size = label.size()
-    let padX = (font.pointSize * 0.8).rounded(), padY = (font.pointSize * 0.3).rounded()
-    let box = NSSize(width: ceil(size.width) + padX * 2, height: ceil(size.height) + padY * 2)
-    let image = NSImage(size: box, flipped: false) { rect in
-        color.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
-        label.draw(at: NSPoint(x: padX, y: padY))
-        return true
+extension NSAttributedString.Key {
+    /// Text drawn on a rounded pill of this color (an `NSColor`) by `PillLayoutManager`, like GitHub's state labels.
+    static let pill = NSAttributedString.Key("LanesPill")
+}
+
+/// Draws `.pill` text on its rounded background. The label stays text, so it can be copied and VoiceOver reads it.
+final class PillLayoutManager: NSLayoutManager {
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        guard let storage = textStorage else { return }
+        let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        storage.enumerateAttribute(.pill, in: chars) { value, range, _ in
+            guard let color = value as? NSColor,
+                  let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont else { return }
+            let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let line = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+            let start = location(forGlyphAt: glyphs.location)
+            // The last character's kern is the pill's right padding, so the pill ends where the next glyph
+            // starts. (A pill is always followed by more text on its line.)
+            guard NSMaxRange(glyphs) < numberOfGlyphs else { return }
+            let end = location(forGlyphAt: NSMaxRange(glyphs)).x
+            let (padX, padY) = pillPadding(font)
+            let rect = NSRect(x: origin.x + line.minX + start.x - padX, y: origin.y + line.minY + start.y - font.ascender - padY,
+                              width: end - start.x + padX, height: font.ascender - font.descender + padY * 2)
+            color.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        }
     }
-    let attachment = NSTextAttachment()
-    attachment.image = image
-    attachment.bounds = NSRect(x: 0, y: font.descender - padY, width: box.width, height: box.height)
-    return NSAttributedString(attachment: attachment)
+}
+
+private func pillPadding(_ font: NSFont) -> (x: CGFloat, y: CGFloat) {
+    ((font.pointSize * 0.8).rounded(), (font.pointSize * 0.3).rounded())
+}
+
+/// `text` on a rounded pill of `color`, drawn by `PillLayoutManager`. It must start its paragraph, whose
+/// `firstLineHeadIndent` makes room for the pill's left padding.
+private func pill(_ text: String, color: NSColor, font: NSFont) -> NSAttributedString {
+    let s = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.white, .pill: color])
+    s.addAttribute(.kern, value: pillPadding(font).x, range: NSRange(location: s.length - 1, length: 1))
+    return s
 }
 
 /// A box drawing a rule under its text, for major headings.
@@ -423,6 +447,10 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let metaStyle = NSMutableParagraphStyle()
     metaStyle.lineHeightMultiple = 1.2
     metaStyle.textBlocks = [headerRule]
+    // Room for the pill's left padding, and lines tall enough to hold the pill, which is drawn within them.
+    metaStyle.firstLineHeadIndent = pillPadding(bold).x
+    metaStyle.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
+    metaStyle.lineSpacing = pillPadding(bold).y * 2
     let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
     meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
                                    attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))

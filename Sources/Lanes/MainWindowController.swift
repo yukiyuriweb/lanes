@@ -59,6 +59,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     init() {
         // TextKit 1: PR text uses text tables and blocks, which TextKit 2 can't lay out.
         textView = NSTextView(usingTextLayoutManager: false)
+        textView.textContainer?.replaceLayoutManager(PillLayoutManager())
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.minSize = .zero
