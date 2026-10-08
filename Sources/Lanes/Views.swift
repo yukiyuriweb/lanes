@@ -295,6 +295,9 @@ private func plainText(_ s: String) -> String {
 private func stripMarkup(_ s: String) -> String {
     let tags = "a|b|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|relative-time|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul"
     var t = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
+    // Line breaks and the ends of blocks become newlines, so `a<br>b` or `<p>a</p><p>b</p>` don't run together.
+    t = t.replacingOccurrences(of: "<br\\b[^<>]*>|<hr\\b[^<>]*>|</(?:p|div|li|tr|h[1-6]|summary|details|table|ul|ol|pre)>",
+                               with: "\n", options: .regularExpression)
     t = t.replacingOccurrences(of: "</?(?:\(tags))\\b[^<>]*>", with: "", options: .regularExpression)
     t = t.replacingOccurrences(of: "!\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)   // ![alt](image) → alt
     for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
