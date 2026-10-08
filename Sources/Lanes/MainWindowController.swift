@@ -30,6 +30,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     /// What the detail list showed before a reload, so reloading the same commit returns to it.
     private enum DetailItem { case pullRequest(url: String), file(path: String) }
     private var restoreDetail: (hash: String, item: DetailItem)?
+    /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
+    private var detailTouched = false
     private var summaryText = NSAttributedString()
     /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
@@ -156,8 +158,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     @objc func reload(_ sender: Any? = nil) {
         guard let repo else { return }
-        let selectedHash = commitTable.selectedRow >= 0 && commitTable.selectedRow < commits.count
-            ? commits[commitTable.selectedRow].hash : nil
         loadToken += 1
         let token = loadToken
         Task.detached {
@@ -165,7 +165,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             let layout = GraphLayout.compute(commits)
             await MainActor.run {
                 guard token == self.loadToken else { return }
-                self.apply(commits: commits, layout: layout, selecting: selectedHash)
+                self.apply(commits: commits, layout: layout)
             }
         }
         // Fetched separately so the graph never waits on the network.
@@ -200,7 +200,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         if row == selected && row >= 1 && row <= detailPRs.count { showPullRequest(detailPRs[row - 1]) }
     }
 
-    private func apply(commits: [Commit], layout: (rows: [GraphRow], width: Int), selecting hash: String?) {
+    private func apply(commits: [Commit], layout: (rows: [GraphRow], width: Int)) {
+        // Keep whatever is selected now (it may have changed since the reload started), along with its detail item.
+        let hash = commitTable.selectedRow >= 0 && commitTable.selectedRow < self.commits.count
+            ? self.commits[commitTable.selectedRow].hash : nil
         if let hash, let item = selectedDetailItem() { restoreDetail = (hash, item) }
         self.commits = commits
         self.rows = layout.rows
@@ -235,6 +238,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         detailPRs = []
         summaryText = NSAttributedString()
         fileTable.reloadData()
+        fileTable.deselectAll(nil)
+        detailTouched = false
         textView.string = ""
         guard let commit, let repo else { return }
         let restore = restoreDetail?.hash == commit.hash ? restoreDetail?.item : nil
@@ -251,12 +256,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 ])
                 self.fileTable.reloadData()
                 var row = 0
-                switch restore {
+                switch self.detailTouched ? nil : restore {
                 case .pullRequest(let url)?: row = self.detailPRs.firstIndex { $0.url == url }.map { $0 + 1 } ?? 0
                 case .file(let path)?: row = self.files.firstIndex { $0.path == path }.map { $0 + 1 + self.detailPRs.count } ?? 0
                 case nil: break
                 }
-                // The row may already be selected (e.g. clicked while loading), in which case no selection change fires.
+                // "Commit Details" may already be selected (clicked while loading), in which case no selection change fires.
                 let changes = self.fileTable.selectedRow != row
                 self.fileTable.selectRowIndexes([row], byExtendingSelection: false)
                 if !changes { self.showDetailRow(row) }
@@ -378,6 +383,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         if table === commitTable {
             showDetails(table.selectedRow >= 0 ? commits[table.selectedRow] : nil)
         } else {
+            if table.selectedRow >= 0 { detailTouched = true }
             showDetailRow(table.selectedRow)
         }
     }
