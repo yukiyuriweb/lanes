@@ -241,10 +241,17 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if let date { parts.append(("  " + dateFormatter.string(from: date), body, .secondaryLabelColor, nil)) }
         line(parts, in: boxes)
     }
+    // https://github.com/<owner>/<repo>/pull/<n> → https://github.com/<owner>/<repo>/blob/<head branch>/
+    let linkBase = URL(string: pr.url).flatMap { url -> URL? in
+        let parts = url.pathComponents   // ["/", owner, repo, "pull", n]
+        guard parts.count >= 3, let branch = pr.headRefName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else { return nil }
+        return URL(string: "https://\(url.host ?? "github.com")/\(parts[1])/\(parts[2])/blob/\(branch)/")
+    }
     func markdown(_ s: String, in boxes: [NSTextBlock]) {
         let cleaned = plainText(s)
         guard !cleaned.isEmpty else { return }
-        if let formatted = renderMarkdown(cleaned, font: body, container: boxes) {
+        if let formatted = renderMarkdown(cleaned, font: body, container: boxes, linkBase: linkBase) {
             result.append(formatted)   // ends with its own newline, which carries the last block's layout
         } else {
             line([(cleaned, body, .labelColor, nil)], in: boxes)
@@ -330,18 +337,48 @@ private func reviewState(_ state: String) -> (String, NSColor) {
 /// Code blocks and code spans are kept as written, so text like `Array<Foo>` survives.
 func plainText(_ s: String) -> String {
     let t = s.replacingOccurrences(of: "\r\n", with: "\n")
-    let code = try! NSRegularExpression(pattern: "```[\\s\\S]*?(?:```|$)|`[^`\\n]+`")
+    // Markdown code (fences, spans) and HTML code (<pre>, <code>); the HTML kind becomes Markdown code.
+    let code = try! NSRegularExpression(pattern:
+        "```[\\s\\S]*?(?:```|$)|<pre\\b[^<>]*>[\\s\\S]*?</pre>|<code\\b[^<>]*>[\\s\\S]*?</code>|`[^`\\n]+`")
     var result = ""
     var prose = t.startIndex
     for match in code.matches(in: t, range: NSRange(t.startIndex..., in: t)) {
         let range = Range(match.range, in: t)!
-        result += stripMarkup(String(t[prose..<range.lowerBound])) + t[range]
+        result += stripMarkup(String(t[prose..<range.lowerBound])) + markdownCode(String(t[range]))
         prose = range.upperBound
     }
     result += stripMarkup(String(t[prose...]))
     result = result.replacingOccurrences(of: "[ \t]+\n", with: "\n", options: .regularExpression)
     result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
     return result.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// A link target as an absolute URL: relative paths against `base` (a leading `/` means the repository root),
+/// and nil for fragment-only links like `#details`, which have nowhere to go here.
+private func resolve(_ link: URL, against base: URL?) -> URL? {
+    if link.scheme != nil { return link }
+    let target = link.relativeString
+    guard !target.hasPrefix("#"), let base else { return nil }
+    return URL(string: target.hasPrefix("/") ? String(target.dropFirst()) : target, relativeTo: base)?.absoluteURL
+}
+
+/// HTML code as Markdown code, so its contents show verbatim: `<pre>` as a fenced block, `<code>` as a code
+/// span. Markdown code is returned as it is.
+private func markdownCode(_ s: String) -> String {
+    let isBlock = s.hasPrefix("<pre")
+    guard isBlock || s.hasPrefix("<code") else { return s }
+    var inner = s.replacingOccurrences(of: "</?(?:pre|code)\\b[^<>]*>", with: "", options: .regularExpression)
+    for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
+        inner = inner.replacingOccurrences(of: entity, with: char)
+    }
+    if isBlock {
+        // A fence longer than any run of backticks inside, so the contents can't close it.
+        let longest = inner.components(separatedBy: CharacterSet(charactersIn: "`").inverted).map(\.count).max() ?? 0
+        let fence = String(repeating: "`", count: max(3, longest + 1))
+        return "\n\n" + fence + "\n" + inner.trimmingCharacters(in: .newlines) + "\n" + fence + "\n\n"
+    }
+    let ticks = String(repeating: "`", count: inner.contains("`") ? 2 : 1)
+    return ticks + (ticks.count > 1 ? " \(inner) " : inner) + ticks
 }
 
 /// Removes HTML comments, the HTML tags GitHub renders (but not other angle brackets, as in `x < y` or
@@ -366,7 +403,8 @@ private func stripMarkup(_ s: String) -> String {
 /// Tables, code blocks and quotes use text blocks (AppKit's box model: borders, padding, backgrounds),
 /// which makes the text view fall back to TextKit 1 while they're shown.
 /// Returns nil if the text can't be parsed.
-private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBlock]) -> NSAttributedString? {
+/// `linkBase` resolves repository-relative links (GitHub resolves them against the PR's branch).
+private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBlock], linkBase: URL?) -> NSAttributedString? {
     guard let parsed = try? AttributedString(markdown: source, options: .init(
         interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)) else { return nil }
     let out = NSMutableAttributedString()
@@ -504,7 +542,7 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
             }
             if inline.contains(.strikethrough) { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         }
-        if let link = run.link { attrs[.link] = link }
+        if let link = run.link.flatMap({ resolve($0, against: linkBase) }) { attrs[.link] = link }
 
         attrs[.font] = runFont
         attrs[.foregroundColor] = color
