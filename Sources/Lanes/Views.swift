@@ -20,8 +20,16 @@ enum TextSize {
         return steps.contains(CGFloat(saved)) ? CGFloat(saved) : 1
     }
 
-    /// `size` (in points at the default text size) scaled to the current text size.
-    static func pt(_ size: CGFloat) -> CGFloat { (size * scale * 2).rounded() / 2 }
+    /// The defaults: the lists a step up from the system's small sizes, the text pane (summary, diffs, PRs)
+    /// two steps further, for reading.
+    private static let listBase: CGFloat = 1.1
+    private static let paneBase: CGFloat = 1.25
+
+    /// `size` (in points at 100%) for the lists, scaled to the current text size.
+    static func pt(_ size: CGFloat) -> CGFloat { (size * listBase * scale * 2).rounded() / 2 }
+
+    /// `size` (in points at 100%) for the text pane, scaled to the current text size.
+    static func pane(_ size: CGFloat) -> CGFloat { (size * paneBase * scale * 2).rounded() / 2 }
 
     static func step(_ delta: Int) {
         let i = steps.firstIndex(of: scale) ?? steps.firstIndex(of: 1)!
@@ -175,7 +183,7 @@ func makeTextCell(_ id: NSUserInterfaceItemIdentifier, font: NSFont) -> NSTableC
 }
 
 func colorizeDiff(_ text: String) -> NSAttributedString {
-    let font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
+    let font = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
     let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
     let ns = text as NSString
     ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
@@ -285,8 +293,8 @@ private func ruleBelow() -> NSTextBlock {
     b.setValue(100, type: .percentageValueType, for: .width)
     b.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
     b.setBorderColor(.separatorColor, for: .maxY)
-    b.setWidth(TextSize.pt(5), type: .absoluteValueType, for: .padding, edge: .maxY)
-    b.setWidth(TextSize.pt(8), type: .absoluteValueType, for: .margin, edge: .maxY)
+    b.setWidth(TextSize.pane(5), type: .absoluteValueType, for: .padding, edge: .maxY)
+    b.setWidth(TextSize.pane(8), type: .absoluteValueType, for: .margin, edge: .maxY)
     return b
 }
 
@@ -294,8 +302,8 @@ private func ruleBelow() -> NSTextBlock {
 /// The PR and its conversation as text: the description, reviews and comments in time order, then the review
 /// threads. Each is a bordered card with a tinted header naming who wrote it, like on GitHub.
 func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAttributedString {
-    let body = NSFont.systemFont(ofSize: TextSize.pt(12))
-    let bold = NSFont.boldSystemFont(ofSize: TextSize.pt(12))
+    let body = NSFont.systemFont(ofSize: TextSize.pane(12))
+    let bold = NSFont.boldSystemFont(ofSize: TextSize.pane(12))
     let result = NSMutableAttributedString()
 
     func line(_ parts: [(String, NSFont, NSColor, String?)], in boxes: [NSTextBlock] = [], spacing: CGFloat = 0) {
@@ -310,13 +318,22 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         // The newline ends the paragraph, so it carries the same layout (and boxes) as its text.
         result.append(NSAttributedString(string: "\n", attributes: [.font: body, .paragraphStyle: para]))
     }
-    func section(_ title: String) {
+    /// A section heading with a rule under it; `indented` lines it up with the thread cards it heads.
+    func section(_ title: String, indented: Bool = false) {
         gap()
-        line([(title, .boldSystemFont(ofSize: TextSize.pt(14)), .labelColor, nil)], in: [ruleBelow()])
+        var boxes = [ruleBelow()]
+        if indented {
+            // A box's own margin would move the text but not the rule, so an invisible box provides the indent.
+            let indent = NSTextBlock()
+            indent.setValue(100, type: .percentageValueType, for: .width)
+            indent.setWidth(TextSize.pane(24), type: .absoluteValueType, for: .padding, edge: .minX)
+            boxes.insert(indent, at: 0)
+        }
+        line([(title, .boldSystemFont(ofSize: TextSize.pane(14)), .labelColor, nil)], in: boxes)
     }
     /// Space below a card; the table's own bottom margin isn't applied between adjacent tables.
     func gap() {
-        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(14))]))
+        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pane(14))]))
     }
     /// A card with `rows` rows (a header, then posts or comments); thread cards sit one level in.
     func card(rows: Int, indented: Bool = false) -> CardTable {
@@ -324,7 +341,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         t.numberOfColumns = 1
         t.rows = rows
         t.setValue(100, type: .percentageValueType, for: .width)
-        if indented { t.setWidth(TextSize.pt(24), type: .absoluteValueType, for: .margin, edge: .minX) }
+        if indented { t.setWidth(TextSize.pane(24), type: .absoluteValueType, for: .margin, edge: .minX) }
         return t
     }
     func row(_ card: CardTable, _ index: Int, header: Bool = false) -> NSTextTableBlock {
@@ -373,7 +390,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if n > 0 { line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
     }
 
-    line([("#\(pr.number) \(pr.title)", .boldSystemFont(ofSize: TextSize.pt(16)), .labelColor, nil)], spacing: 2)
+    line([("#\(pr.number) \(pr.title)", .boldSystemFont(ofSize: TextSize.pane(16)), .labelColor, nil)], spacing: 2)
     line([(prStateName(pr), bold, prColor(pr), nil),
           ("  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))  ", body, .secondaryLabelColor, nil),
           (String(localized: "Open on GitHub"), body, .linkColor, pr.url)], spacing: 12)
@@ -400,12 +417,13 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let threads = pr.reviewThreads.nodes
     if !threads.isEmpty {
         let open = threads.filter { !$0.isResolved }.count
-        section(String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count))")
+        // Threads belong to the conversation above, so their heading sits one level in, with them.
+        section(String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count))", indented: true)
     }
     for t in threads {
         let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
         let c = card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indented: true)
-        let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .semibold)
+        let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .semibold)
         if t.isResolved {
             line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
                   ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [row(c, 0, header: true)])
@@ -415,7 +433,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         line([(location, mono, .labelColor, nil)], in: [row(c, 0, header: true)])
         for (i, comment) in t.comments.nodes.enumerated() {
             let cell = row(c, i + 1)
-            byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pt(6))
+            byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pane(6))
             markdown(comment.body, in: [cell])
         }
         if t.comments.hidden > 0 {
@@ -572,8 +590,8 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
                 boxes.append(box(component.identity) {
                     let b = RoundedBlock()
                     b.fill = tint
-                    b.setWidth(TextSize.pt(10), type: .absoluteValueType, for: .padding)
-                    b.setWidth(TextSize.pt(10), type: .absoluteValueType, for: .margin, edge: .maxY)
+                    b.setWidth(TextSize.pane(10), type: .absoluteValueType, for: .padding)
+                    b.setWidth(TextSize.pane(10), type: .absoluteValueType, for: .margin, edge: .maxY)
                     b.setValue(100, type: .percentageValueType, for: .width)
                     return b
                 })
