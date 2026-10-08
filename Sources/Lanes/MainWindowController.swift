@@ -51,8 +51,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }()
 
     init() {
-        textScroll = NSTextView.scrollableTextView()
-        textView = textScroll.documentView as! NSTextView
+        // TextKit 1: PR text uses text tables and blocks, which TextKit 2 can't lay out.
+        textView = NSTextView(usingTextLayoutManager: false)
+        textView.autoresizingMask = [.width]
+        textView.isVerticallyResizable = true
+        textView.minSize = .zero
+        textScroll = NSScrollView()
+        textScroll.hasVerticalScroller = true
+        textScroll.documentView = textView
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)

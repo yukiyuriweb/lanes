@@ -209,8 +209,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         let cleaned = plainText(s)
         guard !cleaned.isEmpty else { return }
         if let formatted = renderMarkdown(cleaned, font: body, indent: indent) {
-            result.append(formatted)
-            add("\n")
+            result.append(formatted)   // ends with its own newline, which carries the last block's layout
         } else {
             add(cleaned + "\n")
         }
@@ -322,76 +321,155 @@ private func stripMarkup(_ s: String) -> String {
 
 /// Markdown (GitHub-flavored) as styled text. Foundation parses it, but AppKit doesn't lay out its blocks,
 /// so headings, lists, quotes, code blocks and tables are styled here from each run's presentation intent.
+/// Tables, code blocks and quotes use text blocks (AppKit's box model: borders, padding, backgrounds),
+/// which makes the text view fall back to TextKit 1 while they're shown.
 /// Returns nil if the text can't be parsed.
 private func renderMarkdown(_ source: String, font: NSFont, indent: CGFloat) -> NSAttributedString? {
     guard let parsed = try? AttributedString(markdown: source, options: .init(
         interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)) else { return nil }
     let out = NSMutableAttributedString()
     let mono = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
-    let codeBackground = NSColor.labelColor.withAlphaComponent(0.07)
+    let tint = NSColor.labelColor.withAlphaComponent(0.06)
     var lastBlock: Int?? = .none   // identity of the previous run's innermost block; nil for raw HTML
-    var lastRow: Int?
+    var lastAttrs: [NSAttributedString.Key: Any] = [:]
     var markedItems = Set<Int>()
+    // Every run of one table, cell, code block or quote must share the same block object.
+    var tables: [Int: NSTextTable] = [:]
+    var textBlocks: [Int: NSTextBlock] = [:]
+    let indentBox = NSTextBlock()
+    indentBox.setValue(100, type: .percentageValueType, for: .width)
+    indentBox.setWidth(indent, type: .absoluteValueType, for: .padding, edge: .minX)
+
+    func box(_ id: Int, _ make: () -> NSTextBlock) -> NSTextBlock {
+        if let b = textBlocks[id] { return b }
+        let b = make()
+        textBlocks[id] = b
+        return b
+    }
 
     for run in parsed.runs {
         var text = String(parsed[run.range].characters)
         let blocks = run.presentationIntent?.components ?? []   // innermost first
         let block = blocks.first?.identity
-        let row = blocks.first { if case .tableRow = $0.kind { return true }; if case .tableHeaderRow = $0.kind { return true }; return false }?.identity
         let listDepth = blocks.filter { if case .listItem = $0.kind { return true }; return false }.count
-        let quoted = blocks.contains { if case .blockQuote = $0.kind { return true }; return false }
-        let isHeaderRow = blocks.contains { if case .tableHeaderRow = $0.kind { return true }; return false }
 
-        // Blocks aren't separated in the parsed text: start a new line (or the next table cell) when the block changes.
-        var prefix = ""
+        // Blocks aren't separated in the parsed text: end the previous paragraph with its own layout.
+        var marker = ""
         if lastBlock == nil || lastBlock! != block {
-            if out.length > 0 { prefix = row != nil && row == lastRow ? "\t" : "\n" }
+            if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: lastAttrs)) }
             if let i = blocks.firstIndex(where: { if case .listItem = $0.kind { return true }; return false }),
                !markedItems.contains(blocks[i].identity) {
                 markedItems.insert(blocks[i].identity)
                 if case .listItem(let ordinal) = blocks[i].kind, i + 1 < blocks.count, case .orderedList = blocks[i + 1].kind {
-                    prefix += "\(ordinal). "
+                    marker = "\(ordinal). "
                 } else {
-                    prefix += "• "
+                    marker = "• "
                 }
             }
         }
         lastBlock = .some(block)
-        lastRow = row
+
+        // Boxes, outermost first: quotes get a bar on the left, code blocks a tinted box, table cells borders.
+        var boxes: [NSTextBlock] = []
+        var isHeaderRow = false
+        for component in blocks.reversed() {
+            switch component.kind {
+            case .blockQuote:
+                boxes.append(box(component.identity) {
+                    let b = NSTextBlock()
+                    b.setWidth(3, type: .absoluteValueType, for: .border, edge: .minX)
+                    b.setBorderColor(.separatorColor, for: .minX)
+                    b.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
+                    b.setWidth(4, type: .absoluteValueType, for: .margin, edge: .maxY)
+                    b.setValue(100, type: .percentageValueType, for: .width)   // otherwise it shrinks to nothing
+                    return b
+                })
+            case .codeBlock:
+                boxes.append(box(component.identity) {
+                    let b = NSTextBlock()
+                    b.backgroundColor = tint
+                    b.setWidth(8, type: .absoluteValueType, for: .padding)
+                    b.setWidth(4, type: .absoluteValueType, for: .margin, edge: .maxY)
+                    b.setValue(100, type: .percentageValueType, for: .width)
+                    return b
+                })
+            case .table(let columns):
+                if tables[component.identity] == nil {
+                    let t = NSTextTable()
+                    t.numberOfColumns = max(columns.count, 1)
+                    t.layoutAlgorithm = .automaticLayoutAlgorithm
+                    t.collapsesBorders = true
+                    t.hidesEmptyCells = false
+                    t.setWidth(4, type: .absoluteValueType, for: .margin, edge: .maxY)
+                    tables[component.identity] = t
+                }
+            case .tableHeaderRow:
+                isHeaderRow = true
+            case .tableCell(let column):
+                let table = blocks.compactMap { c -> NSTextTable? in
+                    if case .table = c.kind { return tables[c.identity] }; return nil
+                }.first
+                let row = blocks.compactMap { c -> Int? in
+                    if case .tableRow(let r) = c.kind { return r }
+                    if case .tableHeaderRow = c.kind { return 0 }
+                    return nil
+                }.first ?? 0
+                if let table {
+                    let header = isHeaderRow
+                    boxes.append(box(component.identity) {
+                        let b = NSTextTableBlock(table: table, startingRow: row, rowSpan: 1, startingColumn: column, columnSpan: 1)
+                        b.setWidth(1, type: .absoluteValueType, for: .border)
+                        b.setBorderColor(.separatorColor)
+                        b.setWidth(6, type: .absoluteValueType, for: .padding)
+                        if header { b.backgroundColor = tint }
+                        return b
+                    })
+                }
+            default:
+                break
+            }
+        }
+        // The indent for thread comments: a margin on a table, an invisible wrapping box around other boxes
+        // (their own margin would shift the text but not their background), or the paragraph indent.
+        if indent > 0, let outer = boxes.first {
+            if let cell = outer as? NSTextTableBlock {
+                cell.table.setWidth(indent, type: .absoluteValueType, for: .margin, edge: .minX)
+            } else {
+                boxes.insert(indentBox, at: 0)
+            }
+        }
 
         var runFont = font
         var color = NSColor.labelColor
         var attrs: [NSAttributedString.Key: Any] = [:]
         let para = NSMutableParagraphStyle()
-        let left = indent + CGFloat(listDepth) * 16 + (quoted ? 12 : 0)
+        let left = (boxes.isEmpty ? indent : 0) + CGFloat(listDepth) * 16
         para.firstLineHeadIndent = left
         para.headIndent = left + (listDepth > 0 ? 14 : 0)   // wrapped list lines align after the marker
-        para.paragraphSpacing = 4
+        para.paragraphSpacing = boxes.isEmpty ? 4 : 0
+        para.textBlocks = boxes
         switch blocks.first?.kind {
         case .header(let level)?:
             runFont = .boldSystemFont(ofSize: font.pointSize + [6, 4, 2, 1, 0, 0][min(max(level, 1), 6) - 1])
             para.paragraphSpacingBefore = 6
         case .codeBlock?:
             runFont = mono
-            attrs[.backgroundColor] = codeBackground
             while text.hasSuffix("\n") { text.removeLast() }
         case .thematicBreak?:
             color = .tertiaryLabelColor
         case .tableCell?:
-            para.tabStops = (1..<8).map { NSTextTab(textAlignment: .left, location: left + CGFloat($0) * 180) }
-            para.headIndent = left + 180   // wrapped cell text lines up with the second column
             if isHeaderRow { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
         default:
             break
         }
-        if quoted { color = .secondaryLabelColor }
+        if blocks.contains(where: { if case .blockQuote = $0.kind { return true }; return false }) { color = .secondaryLabelColor }
 
         if let inline = run.inlinePresentationIntent {
             if inline.contains(.stronglyEmphasized) { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
             if inline.contains(.emphasized) { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .italicFontMask) }
             if inline.contains(.code) {
                 runFont = mono
-                attrs[.backgroundColor] = codeBackground
+                attrs[.backgroundColor] = tint
             }
             if inline.contains(.strikethrough) { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         }
@@ -400,12 +478,14 @@ private func renderMarkdown(_ source: String, font: NSFont, indent: CGFloat) -> 
         attrs[.font] = runFont
         attrs[.foregroundColor] = color
         attrs[.paragraphStyle] = para
-        var prefixAttrs = attrs
-        prefixAttrs[.backgroundColor] = nil
-        prefixAttrs[.link] = nil
-        prefixAttrs[.font] = blocks.first.map { if case .header = $0.kind { return runFont }; return font } ?? font
-        out.append(NSAttributedString(string: prefix, attributes: prefixAttrs))
+        var plain = attrs   // for markers and paragraph ends: no link, no code background
+        plain[.backgroundColor] = nil
+        plain[.link] = nil
+        plain[.strikethroughStyle] = nil
+        if !marker.isEmpty { out.append(NSAttributedString(string: marker, attributes: plain)) }
         out.append(NSAttributedString(string: text, attributes: attrs))
+        lastAttrs = plain
     }
+    if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: lastAttrs)) }
     return out
 }
