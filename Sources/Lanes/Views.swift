@@ -717,6 +717,8 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
     var lastBlock: Int?? = .none   // identity of the previous run's innermost block; nil for raw HTML
     var lastAttrs: [NSAttributedString.Key: Any] = [:]
     var markedItems = Set<Int>()
+    var lastTable: Int?   // identity of the table the previous run was in
+    var spaceBefore: CGFloat = 0   // above the paragraph being built
     // Every run of one table, cell, code block or quote must share the same block object.
     var tables: [Int: NSTextTable] = [:]
     var textBlocks: [Int: NSTextBlock] = [:]
@@ -733,11 +735,32 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         let blocks = run.presentationIntent?.components ?? []   // innermost first
         let block = blocks.first?.identity
         let listDepth = blocks.filter { if case .listItem = $0.kind { return true }; return false }.count
+        let table = blocks.first { if case .table = $0.kind { return true }; return false }?.identity
+        let inTable = table != nil, lastInTable = lastTable != nil
 
         // Blocks aren't separated in the parsed text: end the previous paragraph with its own layout.
         var marker = ""
         if lastBlock == nil || lastBlock! != block {
             if out.length > 0 { out.append(NSAttributedString(string: "\n", attributes: lastAttrs)) }
+            // A table has no line spacing of its own around it (and its margins aren't applied inside a card),
+            // so the paragraphs before and after it leave room, like the space between paragraphs.
+            if out.length > 0, inTable, !lastInTable {
+                let previous = (out.string as NSString).paragraphRange(for: NSRange(location: out.length - 1, length: 0))
+                out.enumerateAttribute(.paragraphStyle, in: previous) { value, range, _ in
+                    guard let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
+                    style.paragraphSpacing = max(style.paragraphSpacing, font.pointSize)
+                    out.addAttribute(.paragraphStyle, value: style, range: range)
+                }
+            }
+            // Back-to-back tables would read as one, so an empty line of that height goes between them.
+            if inTable, lastInTable, table != lastTable {
+                let spacer = NSMutableParagraphStyle()
+                spacer.textBlocks = container
+                spacer.minimumLineHeight = font.pointSize
+                spacer.maximumLineHeight = font.pointSize
+                out.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: spacer]))
+            }
+            spaceBefore = lastInTable && !inTable ? font.pointSize : 0
             if let i = blocks.firstIndex(where: { if case .listItem = $0.kind { return true }; return false }),
                !markedItems.contains(blocks[i].identity) {
                 markedItems.insert(blocks[i].identity)
@@ -749,8 +772,10 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
             }
         }
         lastBlock = .some(block)
+        lastTable = table
 
         // Boxes, outermost first: quotes get a bar on the left, code blocks a tinted box, table cells borders.
+        let knownBoxes = Set(textBlocks.keys)
         var boxes: [NSTextBlock] = []
         var isHeaderRow = false
         for component in blocks.reversed() {
@@ -844,6 +869,28 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
             if isHeaderRow { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
         default:
             break
+        }
+        // Space above a code block or quote goes outside its box, so the box's background or bar doesn't grow.
+        let boxed = blocks.contains { c in
+            if case .codeBlock = c.kind { return true }
+            if case .blockQuote = c.kind { return true }
+            return false
+        }
+        if boxed, let outer = boxes.first {
+            if spaceBefore > 0, let id = blocks.last(where: { textBlocks[$0.identity] === outer })?.identity {
+                // A quote can go on after a table inside it. Its part before the table keeps the box it has,
+                // and the rest gets a copy, so the margin doesn't add space above the whole quote.
+                var spaced = outer
+                if knownBoxes.contains(id) {
+                    spaced = outer.copy() as! NSTextBlock
+                    textBlocks[id] = spaced
+                    boxes[0] = spaced
+                    para.textBlocks = container + boxes
+                }
+                spaced.setWidth(spaceBefore, type: .absoluteValueType, for: .margin, edge: .minY)
+            }
+        } else {
+            para.paragraphSpacingBefore = max(para.paragraphSpacingBefore, spaceBefore)
         }
         if blocks.contains(where: { if case .blockQuote = $0.kind { return true }; return false }) { color = .secondaryLabelColor }
 
