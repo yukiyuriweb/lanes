@@ -55,4 +55,5 @@
 "1 file changed" = "1 ファイルを変更";
 "%lld files changed" = "%lld ファイルを変更";
 "binary" = "バイナリ";
+"1 more file" = "ほか 1 ファイル";
 "%lld more files" = "ほか %lld ファイル";

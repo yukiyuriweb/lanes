@@ -496,7 +496,7 @@ func renderCommit(_ c: CommitSummary, dateFormatter: DateFormatter) -> NSAttribu
         }
     }
     if more > 0 {
-        doc.line([(String(localized: "\(more) more files"), doc.body, grey, nil)], in: [doc.row(card, shown.count + 1, padding: 6)])
+        doc.line([(more == 1 ? String(localized: "1 more file") : String(localized: "\(more) more files"), doc.body, grey, nil)], in: [doc.row(card, shown.count + 1, padding: 6)])
     }
     return doc.result
 }
