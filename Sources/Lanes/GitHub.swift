@@ -29,6 +29,8 @@ struct PullRequest: Decodable {
         let line: Int?
         let originalLine: Int?
         let comments: Nodes<Comment>
+        /// The newest comment, which the first page of `comments` may not reach.
+        let latestComment: Nodes<Comment>?
     }
 
     let number: Int
@@ -65,11 +67,19 @@ struct PullRequest: Decodable {
         return nil
     }
 
-    /// When someone other than `viewer` last reviewed or commented, or nil if nobody else has.
+    /// When someone other than `viewer` last reviewed or commented, or nil if nobody else has. Activity in
+    /// resolved threads doesn't count: there's nothing left to do there, and those threads show collapsed.
     func lastActivity(excluding viewer: String) -> Date? {
-        let reviews = reviews.nodes.compactMap { r in r.author?.login == viewer ? nil : r.submittedAt }
-        let comments = (comments.nodes + reviewThreads.nodes.flatMap(\.comments.nodes))
-            .compactMap { c in c.author?.login == viewer ? nil : c.createdAt }
+        // A thread comment arrives in a review of its own, empty unless it has a summary; count such
+        // comments through their (unresolved) thread instead of through that review. When not every thread
+        // was fetched, those reviews still count, so replies in the missing threads aren't lost.
+        // "Empty" is judged like the conversation view does, so a review counts only if it's shown.
+        let threadsComplete = reviewThreads.hidden == 0
+        let reviews = reviews.nodes.filter { !threadsComplete || $0.state != "COMMENTED" || !plainText($0.body).isEmpty }
+            .compactMap { r in r.author?.login == viewer ? nil : r.submittedAt }
+        let threadComments = reviewThreads.nodes.filter { !$0.isResolved }
+            .flatMap { $0.comments.nodes + ($0.latestComment?.nodes ?? []) }
+        let comments = (comments.nodes + threadComments).compactMap { c in c.author?.login == viewer ? nil : c.createdAt }
         return (reviews + comments).max()
     }
 }
@@ -110,7 +120,8 @@ enum GitHub {
                 comments(last: 100) { totalCount nodes { author { login } body createdAt } }
                 reviewThreads(first: 50) {
                   totalCount
-                  nodes { isResolved path line originalLine comments(first: 30) { totalCount nodes { author { login } body createdAt } } }
+                  nodes { isResolved path line originalLine comments(first: 30) { totalCount nodes { author { login } body createdAt } }
+                          latestComment: comments(last: 1) { nodes { author { login } body createdAt } } }
                 }
               }
             }
