@@ -4,7 +4,7 @@ Lanes is a read-only, native macOS viewer for Git history (Swift + AppKit, no de
 
 ## Build and run
 
-- `./build.sh` builds a release binary and assembles, icons and ad-hoc signs `build/Lanes.app`.
+- `./build.sh` builds a release binary, then assembles `build/Lanes.app`, adds the icon and ad-hoc signs it.
 - `swift build -c release` alone is enough to check that the code compiles.
 - The app icon is drawn by `scripts/make-icon.swift`; `build.sh` regenerates it on every build. Don't commit image files for it.
 - Swift language mode is 5 (`swift-tools-version:5.9`). `main.swift` wraps app startup in `MainActor.assumeIsolated`.
