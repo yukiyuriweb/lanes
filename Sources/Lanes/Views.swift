@@ -357,7 +357,7 @@ private func reviewState(_ state: String) -> (String, NSColor) {
 
 /// Comment bodies are Markdown with embedded HTML (bots use plenty); removes the HTML, leaving Markdown.
 /// Code blocks and code spans are kept as written, so text like `Array<Foo>` survives.
-private func plainText(_ s: String) -> String {
+func plainText(_ s: String) -> String {
     let t = s.replacingOccurrences(of: "\r\n", with: "\n")
     let code = try! NSRegularExpression(pattern: "```[\\s\\S]*?(?:```|$)|`[^`\\n]+`")
     var result = ""
