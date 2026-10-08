@@ -29,6 +29,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var textToken = 0
     /// Bumped on each open request, so a slow earlier request can't override a later one.
     private var openToken = 0
+    /// Bumped on each history reload, so an older reload can't overwrite a newer one.
+    private var loadToken = 0
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -160,11 +162,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard let repo else { return }
         let selectedHash = commitTable.selectedRow >= 0 && commitTable.selectedRow < commits.count
             ? commits[commitTable.selectedRow].hash : nil
+        loadToken += 1
+        let token = loadToken
         Task.detached {
             let commits = Git.log(in: repo, limit: 20000)
             let layout = GraphLayout.compute(commits)
             await MainActor.run {
-                guard self.repo == repo else { return }
+                guard token == self.loadToken else { return }
                 self.apply(commits: commits, layout: layout, selecting: selectedHash)
             }
         }

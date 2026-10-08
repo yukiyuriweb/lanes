@@ -143,7 +143,7 @@ enum Git {
         var paths = [file.path]
         if let old = file.oldPath { paths.insert(old, at: 0) }
         let limit = 2_000_000
-        guard let result = run(["diff", "--no-color", "--no-ext-diff", "-M", base(of: c, in: repo), c.hash, "--"] + paths,
+        guard let result = run(["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "-M", base(of: c, in: repo), c.hash, "--"] + paths,
                                in: repo, limit: limit)
         else { return "" }
         return result.truncated ? result.output + "\n… (truncated at \(limit / 1_000_000) MB)\n" : result.output
