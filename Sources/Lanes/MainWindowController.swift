@@ -254,14 +254,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                     .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                     .foregroundColor: NSColor.labelColor,
                 ])
+                // A row the user picked while loading (Commit Details, or a PR row that arrived first) stays selected.
+                // Read it before reloading, which clears the selection.
+                let picked = self.detailTouched ? max(self.fileTable.selectedRow, 0) : nil
                 self.fileTable.reloadData()
-                var row = 0
+                var row = picked ?? 0
                 switch self.detailTouched ? nil : restore {
                 case .pullRequest(let url)?: row = self.detailPRs.firstIndex { $0.url == url }.map { $0 + 1 } ?? 0
                 case .file(let path)?: row = self.files.firstIndex { $0.path == path }.map { $0 + 1 + self.detailPRs.count } ?? 0
                 case nil: break
                 }
-                // "Commit Details" may already be selected (clicked while loading), in which case no selection change fires.
+                // The row may already be selected (clicked while loading), in which case no selection change fires.
                 let changes = self.fileTable.selectedRow != row
                 self.fileTable.selectRowIndexes([row], byExtendingSelection: false)
                 if !changes { self.showDetailRow(row) }
