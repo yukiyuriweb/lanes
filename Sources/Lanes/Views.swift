@@ -212,7 +212,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     /// Space below a card; the table's own bottom margin isn't applied between adjacent tables.
     func gap() {
-        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 8)]))
+        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 14)]))
     }
     // A card is a one-column table: its header and each post or comment are rows. (Markdown tables inside
     // it can only nest in a table cell; inside a plain NSTextBlock AppKit throws while drawing them.)
@@ -227,10 +227,10 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         let b = NSTextTableBlock(table: card, startingRow: index, rowSpan: 1, startingColumn: 0, columnSpan: 1)
         b.setWidth(1, type: .absoluteValueType, for: .border)
         b.setBorderColor(.separatorColor)
-        b.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
-        b.setWidth(10, type: .absoluteValueType, for: .padding, edge: .maxX)
-        b.setWidth(header ? 6 : 10, type: .absoluteValueType, for: .padding, edge: .minY)
-        b.setWidth(header ? 6 : 10, type: .absoluteValueType, for: .padding, edge: .maxY)
+        b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .minX)
+        b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .maxX)
+        b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .minY)
+        b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .maxY)
         if header { b.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05) }
         return b
     }

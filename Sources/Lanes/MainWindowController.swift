@@ -128,7 +128,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         textView.isEditable = false
         textView.isRichText = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainerInset = NSSize(width: 24, height: 20)
         // No wrapping: scroll horizontally like a diff viewer.
         textView.isHorizontallyResizable = true
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
