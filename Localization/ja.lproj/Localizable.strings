@@ -1,0 +1,22 @@
+/* Menus */
+"About Lanes" = "Lanes について";
+"Hide Lanes" = "Lanes を隠す";
+"Quit Lanes" = "Lanes を終了";
+"File" = "ファイル";
+"Open…" = "開く…";
+"Reload" = "再読み込み";
+"Close Window" = "ウインドウを閉じる";
+"Edit" = "編集";
+"Copy" = "コピー";
+"Select All" = "すべてを選択";
+"Find…" = "検索…";
+
+/* Main window */
+"Graph" = "グラフ";
+"Description" = "説明";
+"Date" = "日付";
+"Author" = "作者";
+"Commit" = "コミット";
+"Commit Details" = "コミット詳細";
+"Not a Git repository" = "Git リポジトリではありません";
+"Choose a Git repository folder" = "Git リポジトリのフォルダを選択";

@@ -62,11 +62,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             col.resizingMask = flexible ? [.autoresizingMask, .userResizingMask] : .userResizingMask
             commitTable.addTableColumn(col)
         }
-        addColumn(.graph, "グラフ", width: 80)
-        addColumn(.description, "説明", width: 600, flexible: true)
-        addColumn(.date, "日付", width: 120)
-        addColumn(.author, "作者", width: 130)
-        addColumn(.hash, "コミット", width: 75)
+        addColumn(.graph, String(localized: "Graph"), width: 80)
+        addColumn(.description, String(localized: "Description"), width: 600, flexible: true)
+        addColumn(.date, String(localized: "Date"), width: 120)
+        addColumn(.author, String(localized: "Author"), width: 130)
+        addColumn(.hash, String(localized: "Commit"), width: 75)
 
         commitTable.style = .fullWidth
         commitTable.rowHeight = 22
@@ -142,7 +142,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func didResolve(_ url: URL, topLevel top: URL?) {
         guard let top else {
             let alert = NSAlert()
-            alert.messageText = "Git リポジトリではありません"
+            alert.messageText = String(localized: "Not a Git repository")
             alert.informativeText = url.path
             alert.runModal()
             return
@@ -256,7 +256,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 ?? makeTextCell(.file, font: .systemFont(ofSize: 12))
             if row == 0 {
                 cell.textField?.attributedStringValue = NSAttributedString(
-                    string: "コミット詳細", attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
+                    string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
             } else {
                 let f = files[row - 1]
                 let s = NSMutableAttributedString(string: f.status + "  ", attributes: [
