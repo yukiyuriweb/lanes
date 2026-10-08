@@ -287,6 +287,24 @@ final class RoundedBlock: NSTextBlock {
     }
 }
 
+/// `text` on a rounded pill of `color`, like GitHub's state labels, as an inline image.
+private func pill(_ text: String, color: NSColor, font: NSFont) -> NSAttributedString {
+    let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.white])
+    let size = label.size()
+    let padX = (font.pointSize * 0.8).rounded(), padY = (font.pointSize * 0.3).rounded()
+    let box = NSSize(width: ceil(size.width) + padX * 2, height: ceil(size.height) + padY * 2)
+    let image = NSImage(size: box, flipped: false) { rect in
+        color.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        label.draw(at: NSPoint(x: padX, y: padY))
+        return true
+    }
+    let attachment = NSTextAttachment()
+    attachment.image = image
+    attachment.bounds = NSRect(x: 0, y: font.descender - padY, width: box.width, height: box.height)
+    return NSAttributedString(attachment: attachment)
+}
+
 /// A box drawing a rule under its text, for major headings.
 private func ruleBelow() -> NSTextBlock {
     let b = NSTextBlock()
@@ -390,10 +408,28 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if n > 0 { line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
     }
 
-    line([("#\(pr.number) \(pr.title)", .boldSystemFont(ofSize: TextSize.pane(16)), .labelColor, nil)], spacing: 2)
-    line([(prStateName(pr), bold, prColor(pr), nil),
-          ("  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))  ", body, .secondaryLabelColor, nil),
-          (String(localized: "Open on GitHub"), body, .linkColor, pr.url)], spacing: 12)
+    // The header, like GitHub's: a large title in regular weight followed by its number in grey, then the
+    // state as a colored pill with who, which branches and when, set off from the conversation by a rule.
+    let titleFont = NSFont.systemFont(ofSize: TextSize.pane(22))
+    let titleStyle = NSMutableParagraphStyle()
+    titleStyle.lineHeightMultiple = 1.1
+    titleStyle.paragraphSpacing = TextSize.pane(12)
+    result.append(NSAttributedString(string: pr.title + " ", attributes: [.font: titleFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: titleStyle]))
+    result.append(NSAttributedString(string: "#\(pr.number)\n", attributes: [.font: titleFont, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: titleStyle]))
+
+    let headerRule = ruleBelow()
+    headerRule.setWidth(TextSize.pane(14), type: .absoluteValueType, for: .padding, edge: .maxY)
+    headerRule.setWidth(TextSize.pane(18), type: .absoluteValueType, for: .margin, edge: .maxY)
+    let metaStyle = NSMutableParagraphStyle()
+    metaStyle.lineHeightMultiple = 1.2
+    metaStyle.textBlocks = [headerRule]
+    let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
+    meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
+                                   attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
+    meta.append(NSAttributedString(string: String(localized: "Open on GitHub"), attributes: [.font: body, .link: URL(string: pr.url) as Any]))
+    meta.append(NSAttributedString(string: "\n", attributes: [.font: body]))
+    meta.addAttribute(.paragraphStyle, value: metaStyle, range: NSRange(location: 0, length: meta.length))
+    result.append(meta)
     post(pr.author, nil, pr.createdAt, pr.body)
 
     enum Item { case review(PullRequest.Review), comment(PullRequest.Comment) }
