@@ -23,3 +23,18 @@
 "Commit Details" = "コミット詳細";
 "Not a Git repository" = "Git リポジトリではありません";
 "Choose a Git repository folder" = "Git リポジトリのフォルダを選択";
+
+/* Pull requests */
+"Pull Request #%lld" = "プルリクエスト #%lld";
+"Open" = "オープン";
+"Draft" = "ドラフト";
+"Merged" = "マージ済み";
+"Closed" = "クローズ";
+"Open on GitHub" = "GitHub で開く";
+"Conversation" = "会話";
+"Review Threads" = "レビュースレッド";
+"Resolved" = "解決済み";
+"Approved" = "承認";
+"Changes requested" = "変更を要求";
+"Dismissed" = "却下";
+"Reviewed" = "レビュー";
