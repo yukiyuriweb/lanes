@@ -204,6 +204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(data, forKey: "openWindows")
     }
 
+    @objc func bigger(_ sender: Any?) { TextSize.step(1) }
+    @objc func smaller(_ sender: Any?) { TextSize.step(-1) }
+    @objc func actualSize(_ sender: Any?) { TextSize.reset() }
+
     @objc func selectTab(_ sender: NSMenuItem) {
         guard let window = NSApp.keyWindow else { return }
         let tabs = window.tabGroup?.windows ?? [window]
@@ -233,6 +237,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: String(localized: "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(withTitle: String(localized: "Find…"), action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f").tag = Int(NSFindPanelAction.showFindPanel.rawValue)
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = editMenu
+
+        let viewMenu = NSMenu(title: String(localized: "View"))
+        viewMenu.addItem(withTitle: String(localized: "Actual Size"), action: #selector(actualSize(_:)), keyEquivalent: "0")
+        viewMenu.addItem(withTitle: String(localized: "Bigger"), action: #selector(bigger(_:)), keyEquivalent: "+")
+        viewMenu.addItem(withTitle: String(localized: "Smaller"), action: #selector(smaller(_:)), keyEquivalent: "-")
+        // ⌘+ needs Shift on many layouts; ⌘= works too, as in most Mac apps.
+        let equals = viewMenu.addItem(withTitle: String(localized: "Bigger"), action: #selector(bigger(_:)), keyEquivalent: "=")
+        equals.isHidden = true
+        equals.allowsKeyEquivalentWhenHidden = true
+        main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = viewMenu
 
         let windowMenu = NSMenu(title: String(localized: "Window"))
         windowMenu.addItem(withTitle: String(localized: "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")

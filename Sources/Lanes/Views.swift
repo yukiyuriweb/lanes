@@ -8,6 +8,35 @@ enum Palette {
     static func color(_ i: Int) -> NSColor { colors[i % colors.count] }
 }
 
+/// The text size the user picked with ⌘+ / ⌘− / ⌘0, for every window. Sizes in the code are written for
+/// the default and go through `pt(_:)`.
+enum TextSize {
+    static let didChange = Notification.Name("LanesTextSizeDidChange")
+    private static let key = "textScale"
+    private static let steps: [CGFloat] = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2]
+
+    static var scale: CGFloat {
+        let saved = UserDefaults.standard.double(forKey: key)
+        return steps.contains(CGFloat(saved)) ? CGFloat(saved) : 1
+    }
+
+    /// `size` (in points at the default text size) scaled to the current text size.
+    static func pt(_ size: CGFloat) -> CGFloat { (size * scale * 2).rounded() / 2 }
+
+    static func step(_ delta: Int) {
+        let i = steps.firstIndex(of: scale) ?? steps.firstIndex(of: 1)!
+        set(steps[min(max(i + delta, 0), steps.count - 1)])
+    }
+
+    static func reset() { set(1) }
+
+    private static func set(_ value: CGFloat) {
+        guard value != scale else { return }
+        UserDefaults.standard.set(Double(value), forKey: key)
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+}
+
 let laneWidth: CGFloat = 14
 let laneInset: CGFloat = 10
 
@@ -68,7 +97,7 @@ final class DescriptionCellView: NSTableCellView {
         guard let commit else { return }
         let textColor: NSColor = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .labelColor
         var x: CGFloat = 4
-        let pillHeight: CGFloat = 16
+        let pillHeight = TextSize.pt(16)
 
         for pr in pullRequests {
             var text = "#\(pr.number)"
@@ -82,7 +111,7 @@ final class DescriptionCellView: NSTableCellView {
                 // Threads beyond the first page aren't fetched, so the count is then a lower bound.
                 text += " 💬\(pr.unresolvedThreads)" + (pr.reviewThreads.hidden > 0 ? "+" : "")
             }
-            let label = NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: textColor])
+            let label = NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(11)), .foregroundColor: textColor])
             let size = label.size()
             let dot: CGFloat = unread.contains(pr.url) ? 10 : 0
             let rect = NSRect(x: x, y: (bounds.height - pillHeight) / 2, width: ceil(size.width) + 10 + dot, height: pillHeight)
@@ -101,7 +130,7 @@ final class DescriptionCellView: NSTableCellView {
         }
 
         for ref in commit.refs {
-            let font = ref.isHead ? NSFont.boldSystemFont(ofSize: 11) : NSFont.systemFont(ofSize: 11)
+            let font = ref.isHead ? NSFont.boldSystemFont(ofSize: TextSize.pt(11)) : NSFont.systemFont(ofSize: TextSize.pt(11))
             let label = NSAttributedString(string: ref.name, attributes: [.font: font, .foregroundColor: textColor])
             let size = label.size()
             let rect = NSRect(x: x, y: (bounds.height - pillHeight) / 2, width: ceil(size.width) + 10, height: pillHeight)
@@ -120,7 +149,7 @@ final class DescriptionCellView: NSTableCellView {
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingTail
         let subject = NSAttributedString(string: commit.subject, attributes: [
-            .font: NSFont.systemFont(ofSize: 12), .foregroundColor: textColor, .paragraphStyle: para,
+            .font: NSFont.systemFont(ofSize: TextSize.pt(12)), .foregroundColor: textColor, .paragraphStyle: para,
         ])
         let h = subject.size().height
         subject.draw(with: NSRect(x: x + 2, y: (bounds.height - h) / 2, width: max(0, bounds.width - x - 4), height: h),
@@ -146,7 +175,7 @@ func makeTextCell(_ id: NSUserInterfaceItemIdentifier, font: NSFont) -> NSTableC
 }
 
 func colorizeDiff(_ text: String) -> NSAttributedString {
-    let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    let font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
     let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
     let ns = text as NSString
     ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
@@ -190,8 +219,8 @@ func prStateName(_ pr: PullRequest) -> String {
 /// The PR and its conversation as text: the description, reviews and comments in time order, then the review
 /// threads. Each is a bordered card with a tinted header naming who wrote it, like on GitHub.
 func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAttributedString {
-    let body = NSFont.systemFont(ofSize: 12)
-    let bold = NSFont.boldSystemFont(ofSize: 12)
+    let body = NSFont.systemFont(ofSize: TextSize.pt(12))
+    let bold = NSFont.boldSystemFont(ofSize: TextSize.pt(12))
     let result = NSMutableAttributedString()
 
     func line(_ parts: [(String, NSFont, NSColor, String?)], in boxes: [NSTextBlock] = [], spacing: CGFloat = 0) {
@@ -208,11 +237,11 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     func section(_ title: String) {
         gap()
-        line([(title, .boldSystemFont(ofSize: 13), .labelColor, nil)], spacing: 8)
+        line([(title, .boldSystemFont(ofSize: TextSize.pt(13)), .labelColor, nil)], spacing: 8)
     }
     /// Space below a card; the table's own bottom margin isn't applied between adjacent tables.
     func gap() {
-        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 14)]))
+        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(14))]))
     }
     // A card is a one-column table: its header and each post or comment are rows. (Markdown tables inside
     // it can only nest in a table cell; inside a plain NSTextBlock AppKit throws while drawing them.)
@@ -270,7 +299,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if n > 0 { line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
     }
 
-    line([("#\(pr.number) \(pr.title)", .boldSystemFont(ofSize: 16), .labelColor, nil)], spacing: 2)
+    line([("#\(pr.number) \(pr.title)", .boldSystemFont(ofSize: TextSize.pt(16)), .labelColor, nil)], spacing: 2)
     line([(prStateName(pr), bold, prColor(pr), nil),
           ("  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))  ", body, .secondaryLabelColor, nil),
           (String(localized: "Open on GitHub"), body, .linkColor, pr.url)], spacing: 12)
@@ -302,7 +331,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     for t in threads {
         let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
         let c = card()
-        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .semibold)
         if t.isResolved {
             line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
                   ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [row(c, 0, header: true)])
