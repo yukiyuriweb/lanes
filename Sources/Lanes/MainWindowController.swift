@@ -36,6 +36,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
     private var detailTouched = false
     private var summary = ""
+    /// The diff in the text pane (nil while it loads), tagged with its `textToken`, so a new text size can
+    /// recolor it instead of running git again.
+    private var shownDiff: (token: Int, text: String?)?
     /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
     /// Bumped whenever the text pane is pointed at something else; guards diff loads.
@@ -294,10 +297,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         let commit = commits[commitTable.selectedRow]
         textToken += 1
         let token = textToken
+        shownDiff = (token, nil)
         Task.detached {
             let diff = Git.diff(of: commit, file: file, in: repo)
             await MainActor.run {
                 guard token == self.textToken else { return }
+                self.shownDiff = (token, diff)
                 self.setText(colorizeDiff(diff))
             }
         }
@@ -341,7 +346,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         if fileTable.numberOfRows > 0 {
             fileTable.reloadData(forRowIndexes: IndexSet(integersIn: 0..<fileTable.numberOfRows), columnIndexes: [0])
         }
-        if fileTable.selectedRow >= 0 { showDetailRow(fileTable.selectedRow) }
+        if let diff = shownDiff, diff.token == textToken {
+            // A loading diff will be drawn at the new size when it arrives.
+            if let text = diff.text { setText(colorizeDiff(text)) }
+        } else if fileTable.selectedRow >= 0 {
+            showDetailRow(fileTable.selectedRow)
+        }
     }
 
     private func fitProseWidth() {
