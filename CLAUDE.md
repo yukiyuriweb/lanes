@@ -14,7 +14,7 @@ Lanes is a read-only, native macOS viewer for Git history (Swift + AppKit, no de
 - One branch per issue, cut from `main`. Open a PR to `main`; merge with **squash only** (the repo only allows squash, and deletes the head branch on merge).
 - PRs get AI review from Codex (`@codex review`) and Copilot. For each finding: check it against the code, reproduce it when possible, fix it, then reply in the thread with the fixing commit hash and how it was verified. Say so when a finding is wrong instead of changing code.
 - Each re-review tends to surface narrower edge cases. Once real issues are fixed, merge and track further findings as issues rather than looping.
-- Commits, PRs, README and code comments are in English. UI strings are in Japanese.
+- Commits, PRs, README and code comments are in English. UI strings are written in English with `String(localized:)`, and their Japanese translations live in `Localization/ja.lproj/Localizable.strings` (`build.sh` copies it into the app). Add every new UI string to that file.
 
 ## Conventions in the code
 

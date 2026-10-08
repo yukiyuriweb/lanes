@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.message = "Git リポジトリのフォルダを選択"
+        panel.message = String(localized: "Choose a Git repository folder")
         if panel.runModal() == .OK, let url = panel.url { controller.open(url) }
     }
 
@@ -48,23 +48,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Lanes について", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: String(localized: "About Lanes"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Lanes を隠す", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Lanes を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: String(localized: "Hide Lanes"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: String(localized: "Quit Lanes"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = appMenu
 
-        let fileMenu = NSMenu(title: "ファイル")
-        fileMenu.addItem(withTitle: "開く…", action: #selector(openDocument(_:)), keyEquivalent: "o")
-        fileMenu.addItem(withTitle: "再読み込み", action: #selector(reload(_:)), keyEquivalent: "r")
+        let fileMenu = NSMenu(title: String(localized: "File"))
+        fileMenu.addItem(withTitle: String(localized: "Open…"), action: #selector(openDocument(_:)), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: String(localized: "Reload"), action: #selector(reload(_:)), keyEquivalent: "r")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "ウインドウを閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileMenu.addItem(withTitle: String(localized: "Close Window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = fileMenu
 
-        let editMenu = NSMenu(title: "編集")
-        editMenu.addItem(withTitle: "コピー", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        editMenu.addItem(withTitle: "検索…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f").tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+        let editMenu = NSMenu(title: String(localized: "Edit"))
+        editMenu.addItem(withTitle: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: String(localized: "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: String(localized: "Find…"), action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f").tag = Int(NSFindPanelAction.showFindPanel.rawValue)
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = editMenu
 
         return main
