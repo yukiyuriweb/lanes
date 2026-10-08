@@ -207,7 +207,13 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     }
     func text(_ s: String) {
         let cleaned = plainText(s)
-        if !cleaned.isEmpty { add(cleaned + "\n") }
+        guard !cleaned.isEmpty else { return }
+        if let formatted = renderMarkdown(cleaned, font: body, indent: indent) {
+            result.append(formatted)
+            add("\n")
+        } else {
+            add(cleaned + "\n")
+        }
     }
     func more(_ n: Int) {
         if n > 0 { add(String(localized: "\(n) more on GitHub") + "\n\n", body, .secondaryLabelColor) }
@@ -279,7 +285,7 @@ private func reviewStateName(_ state: String) -> String {
     }
 }
 
-/// Comment bodies are Markdown with embedded HTML (bots use plenty); show them as readable plain text.
+/// Comment bodies are Markdown with embedded HTML (bots use plenty); removes the HTML, leaving Markdown.
 /// Code blocks and code spans are kept as written, so text like `Array<Foo>` survives.
 private func plainText(_ s: String) -> String {
     let t = s.replacingOccurrences(of: "\r\n", with: "\n")
@@ -302,13 +308,104 @@ private func plainText(_ s: String) -> String {
 private func stripMarkup(_ s: String) -> String {
     let tags = "a|b|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|relative-time|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul"
     var t = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
-    // Line breaks and the ends of blocks become newlines, so `a<br>b` or `<p>a</p><p>b</p>` don't run together.
-    t = t.replacingOccurrences(of: "<br\\b[^<>]*>|<hr\\b[^<>]*>|</(?:p|div|li|tr|h[1-6]|summary|details|table|ul|ol|pre)>",
-                               with: "\n", options: .regularExpression)
+    // Line breaks and block tags become paragraph breaks, so `a<br>b` or `text\n<p>a</p><p>b</p>` don't run
+    // together (a single newline is just a space in Markdown).
+    t = t.replacingOccurrences(of: "<br\\b[^<>]*>|<hr\\b[^<>]*>|</?(?:p|div|li|tr|h[1-6]|summary|details|table|ul|ol|pre)\\b[^<>]*>",
+                               with: "\n\n", options: .regularExpression)
     t = t.replacingOccurrences(of: "</?(?:\(tags))\\b[^<>]*>", with: "", options: .regularExpression)
     t = t.replacingOccurrences(of: "!\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)   // ![alt](image) → alt
     for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
         t = t.replacingOccurrences(of: entity, with: char)
     }
     return t
+}
+
+/// Markdown (GitHub-flavored) as styled text. Foundation parses it, but AppKit doesn't lay out its blocks,
+/// so headings, lists, quotes, code blocks and tables are styled here from each run's presentation intent.
+/// Returns nil if the text can't be parsed.
+private func renderMarkdown(_ source: String, font: NSFont, indent: CGFloat) -> NSAttributedString? {
+    guard let parsed = try? AttributedString(markdown: source, options: .init(
+        interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)) else { return nil }
+    let out = NSMutableAttributedString()
+    let mono = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+    let codeBackground = NSColor.labelColor.withAlphaComponent(0.07)
+    var lastBlock: Int?? = .none   // identity of the previous run's innermost block; nil for raw HTML
+    var lastRow: Int?
+    var markedItems = Set<Int>()
+
+    for run in parsed.runs {
+        var text = String(parsed[run.range].characters)
+        let blocks = run.presentationIntent?.components ?? []   // innermost first
+        let block = blocks.first?.identity
+        let row = blocks.first { if case .tableRow = $0.kind { return true }; if case .tableHeaderRow = $0.kind { return true }; return false }?.identity
+        let listDepth = blocks.filter { if case .listItem = $0.kind { return true }; return false }.count
+        let quoted = blocks.contains { if case .blockQuote = $0.kind { return true }; return false }
+        let isHeaderRow = blocks.contains { if case .tableHeaderRow = $0.kind { return true }; return false }
+
+        // Blocks aren't separated in the parsed text: start a new line (or the next table cell) when the block changes.
+        var prefix = ""
+        if lastBlock == nil || lastBlock! != block {
+            if out.length > 0 { prefix = row != nil && row == lastRow ? "\t" : "\n" }
+            if let i = blocks.firstIndex(where: { if case .listItem = $0.kind { return true }; return false }),
+               !markedItems.contains(blocks[i].identity) {
+                markedItems.insert(blocks[i].identity)
+                if case .listItem(let ordinal) = blocks[i].kind, i + 1 < blocks.count, case .orderedList = blocks[i + 1].kind {
+                    prefix += "\(ordinal). "
+                } else {
+                    prefix += "• "
+                }
+            }
+        }
+        lastBlock = .some(block)
+        lastRow = row
+
+        var runFont = font
+        var color = NSColor.labelColor
+        var attrs: [NSAttributedString.Key: Any] = [:]
+        let para = NSMutableParagraphStyle()
+        let left = indent + CGFloat(listDepth) * 16 + (quoted ? 12 : 0)
+        para.firstLineHeadIndent = left
+        para.headIndent = left + (listDepth > 0 ? 14 : 0)   // wrapped list lines align after the marker
+        para.paragraphSpacing = 4
+        switch blocks.first?.kind {
+        case .header(let level)?:
+            runFont = .boldSystemFont(ofSize: font.pointSize + [6, 4, 2, 1, 0, 0][min(max(level, 1), 6) - 1])
+            para.paragraphSpacingBefore = 6
+        case .codeBlock?:
+            runFont = mono
+            attrs[.backgroundColor] = codeBackground
+            while text.hasSuffix("\n") { text.removeLast() }
+        case .thematicBreak?:
+            color = .tertiaryLabelColor
+        case .tableCell?:
+            para.tabStops = (1..<8).map { NSTextTab(textAlignment: .left, location: left + CGFloat($0) * 180) }
+            para.headIndent = left + 180   // wrapped cell text lines up with the second column
+            if isHeaderRow { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
+        default:
+            break
+        }
+        if quoted { color = .secondaryLabelColor }
+
+        if let inline = run.inlinePresentationIntent {
+            if inline.contains(.stronglyEmphasized) { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
+            if inline.contains(.emphasized) { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .italicFontMask) }
+            if inline.contains(.code) {
+                runFont = mono
+                attrs[.backgroundColor] = codeBackground
+            }
+            if inline.contains(.strikethrough) { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+        }
+        if let link = run.link { attrs[.link] = link }
+
+        attrs[.font] = runFont
+        attrs[.foregroundColor] = color
+        attrs[.paragraphStyle] = para
+        var prefixAttrs = attrs
+        prefixAttrs[.backgroundColor] = nil
+        prefixAttrs[.link] = nil
+        prefixAttrs[.font] = blocks.first.map { if case .header = $0.kind { return runFont }; return font } ?? font
+        out.append(NSAttributedString(string: prefix, attributes: prefixAttrs))
+        out.append(NSAttributedString(string: text, attributes: attrs))
+    }
+    return out
 }
