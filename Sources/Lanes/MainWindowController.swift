@@ -27,6 +27,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var pullRequests: [String: [PullRequest]] = [:]
     /// The selected commit's pull requests, listed between "Commit Details" and the files.
     private var detailPRs: [PullRequest] = []
+    /// What the detail list showed before a reload, so reloading the same commit returns to it.
+    private enum DetailItem { case pullRequest(url: String), file(path: String) }
+    private var restoreDetail: (hash: String, item: DetailItem)?
     private var summaryText = NSAttributedString()
     /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
@@ -198,6 +201,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }
 
     private func apply(commits: [Commit], layout: (rows: [GraphRow], width: Int), selecting hash: String?) {
+        if let hash, let item = selectedDetailItem() { restoreDetail = (hash, item) }
         self.commits = commits
         self.rows = layout.rows
         if let col = commitTable.tableColumn(withIdentifier: .graph) {
@@ -211,7 +215,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         } else {
             showDetails(nil)
         }
+        // Reselecting the commit (synchronously) started reloading its details if needed; don't apply it later.
+        restoreDetail = nil
         window?.makeFirstResponder(commitTable)
+    }
+
+    private func selectedDetailItem() -> DetailItem? {
+        let row = fileTable.selectedRow
+        if row >= 1 && row <= detailPRs.count { return .pullRequest(url: detailPRs[row - 1].url) }
+        if row > detailPRs.count && row - 1 - detailPRs.count < files.count { return .file(path: files[row - 1 - detailPRs.count].path) }
+        return nil
     }
 
     private func showDetails(_ commit: Commit?) {
@@ -224,6 +237,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileTable.reloadData()
         textView.string = ""
         guard let commit, let repo else { return }
+        let restore = restoreDetail?.hash == commit.hash ? restoreDetail?.item : nil
         Task.detached {
             let files = Git.changedFiles(of: commit, in: repo)
             let summary = Git.summary(of: commit, in: repo)
@@ -236,9 +250,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                     .foregroundColor: NSColor.labelColor,
                 ])
                 self.fileTable.reloadData()
-                // Row 0 may have been clicked while loading, in which case no selection change fires.
-                self.fileTable.selectRowIndexes([0], byExtendingSelection: false)
-                self.showSummary()
+                var row = 0
+                switch restore {
+                case .pullRequest(let url)?: row = self.detailPRs.firstIndex { $0.url == url }.map { $0 + 1 } ?? 0
+                case .file(let path)?: row = self.files.firstIndex { $0.path == path }.map { $0 + 1 + self.detailPRs.count } ?? 0
+                case nil: break
+                }
+                // The row may already be selected (e.g. clicked while loading), in which case no selection change fires.
+                let changes = self.fileTable.selectedRow != row
+                self.fileTable.selectRowIndexes([row], byExtendingSelection: false)
+                if !changes { self.showDetailRow(row) }
             }
         }
     }
@@ -356,12 +377,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         guard let table = notification.object as? NSTableView else { return }
         if table === commitTable {
             showDetails(table.selectedRow >= 0 ? commits[table.selectedRow] : nil)
-        } else if table.selectedRow == 0 {
+        } else {
+            showDetailRow(table.selectedRow)
+        }
+    }
+
+    /// Shows a row of the detail list: the commit summary, a pull request, or a file's diff.
+    private func showDetailRow(_ row: Int) {
+        if row == 0 {
             showSummary()
-        } else if table.selectedRow > 0 && table.selectedRow <= detailPRs.count {
-            showPullRequest(detailPRs[table.selectedRow - 1])
-        } else if table.selectedRow > 0 {
-            showFileDiff(files[table.selectedRow - 1 - detailPRs.count])
+        } else if row > 0 && row <= detailPRs.count {
+            showPullRequest(detailPRs[row - 1])
+        } else if row > 0 {
+            showFileDiff(files[row - 1 - detailPRs.count])
         }
     }
 
