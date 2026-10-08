@@ -340,13 +340,12 @@ private func ruleBelow() -> NSTextBlock {
     return b
 }
 
-/// The PR and its conversation as text: reviews and comments in time order, then the review threads.
-/// The PR and its conversation as text: the description, reviews and comments in time order, then the review
-/// threads. Each is a bordered card with a tinted header naming who wrote it, like on GitHub.
-func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAttributedString {
+/// Builds the text pane's documents (a commit, a PR) from lines, section headings and cards, styled like GitHub.
+private final class RichText {
+    let result = NSMutableAttributedString()
     let body = NSFont.systemFont(ofSize: TextSize.pane(12))
     let bold = NSFont.boldSystemFont(ofSize: TextSize.pane(12))
-    let result = NSMutableAttributedString()
+    let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
 
     func line(_ parts: [(String, NSFont, NSColor, String?)], in boxes: [NSTextBlock] = [], spacing: CGFloat = 0) {
         let para = NSMutableParagraphStyle()
@@ -386,21 +385,152 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if indented { t.setWidth(TextSize.pane(24), type: .absoluteValueType, for: .margin, edge: .minX) }
         return t
     }
-    func row(_ card: CardTable, _ index: Int, header: Bool = false) -> NSTextTableBlock {
+    func row(_ card: CardTable, _ index: Int, header: Bool = false, padding: CGFloat = 14) -> NSTextTableBlock {
         let b = NSTextTableBlock(table: card, startingRow: index, rowSpan: 1, startingColumn: 0, columnSpan: 1)
         if header { card.fills[index] = NSColor.labelColor.withAlphaComponent(0.05) }
         b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .minX)
         b.setWidth(14, type: .absoluteValueType, for: .padding, edge: .maxX)
-        b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .minY)
-        b.setWidth(header ? 8 : 14, type: .absoluteValueType, for: .padding, edge: .maxY)
+        b.setWidth(header ? 8 : padding, type: .absoluteValueType, for: .padding, edge: .minY)
+        b.setWidth(header ? 8 : padding, type: .absoluteValueType, for: .padding, edge: .maxY)
         return b
     }
+    /// The document's header, like GitHub's: a large title in regular weight (`parts` let a number follow in
+    /// grey), then `meta` lines set off from the rest by a rule.
+    func header(_ parts: [(String, NSColor)], meta: NSAttributedString, style: (NSMutableParagraphStyle) -> Void = { _ in }) {
+        let titleFont = NSFont.systemFont(ofSize: TextSize.pane(22))
+        let titleStyle = NSMutableParagraphStyle()
+        titleStyle.lineHeightMultiple = 1.1
+        titleStyle.paragraphSpacing = TextSize.pane(12)
+        for (text, color) in parts {
+            result.append(NSAttributedString(string: text, attributes: [.font: titleFont, .foregroundColor: color, .paragraphStyle: titleStyle]))
+        }
+        result.append(NSAttributedString(string: "\n", attributes: [.font: titleFont, .paragraphStyle: titleStyle]))
+
+        let headerRule = ruleBelow()
+        headerRule.setWidth(TextSize.pane(14), type: .absoluteValueType, for: .padding, edge: .maxY)
+        headerRule.setWidth(TextSize.pane(18), type: .absoluteValueType, for: .margin, edge: .maxY)
+        let metaStyle = NSMutableParagraphStyle()
+        metaStyle.lineHeightMultiple = 1.2
+        metaStyle.textBlocks = [headerRule]
+        style(metaStyle)
+        let m = NSMutableAttributedString(attributedString: meta)
+        m.append(NSAttributedString(string: "\n", attributes: [.font: body]))
+        m.addAttribute(.paragraphStyle, value: metaStyle, range: NSRange(location: 0, length: m.length))
+        result.append(m)
+    }
+}
+
+/// A commit as text, like GitHub's commit page: the subject as a title, who and when, the rest of the message
+/// in a card, then a card listing the changed files with lines added and deleted.
+func renderCommit(_ c: CommitSummary, dateFormatter: DateFormatter) -> NSAttributedString {
+    let doc = RichText()
+    let grey = NSColor.secondaryLabelColor
+    let green = NSColor.systemGreen, red = NSColor.systemRed
+
+    func meta(_ parts: [(String, NSFont, NSColor, String?)]) -> NSAttributedString {
+        let s = NSMutableAttributedString()
+        for (text, font, color, tip) in parts {
+            var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            if let tip { attrs[.toolTip] = tip }
+            s.append(NSAttributedString(string: text, attributes: attrs))
+        }
+        return s
+    }
+    // Names show their email address as a tooltip, which keeps each line short enough not to wrap.
+    var parts: [(String, NSFont, NSColor, String?)] = [
+        (c.author, doc.bold, .labelColor, c.authorEmail), ("  " + dateFormatter.string(from: c.authorDate), doc.body, grey, nil),
+    ]
+    // Rebases, cherry-picks and patches applied by someone else have a committer apart from the author.
+    if c.committer != c.author || c.committerEmail != c.authorEmail {
+        parts += [("\n" + String(localized: "Committed by") + " ", doc.body, grey, nil), (c.committer, doc.bold, .labelColor, c.committerEmail),
+                  ("  " + dateFormatter.string(from: c.committerDate), doc.body, grey, nil)]
+    } else if c.committerDate != c.authorDate {
+        parts += [("  ·  " + String(localized: "committed") + " " + dateFormatter.string(from: c.committerDate), doc.body, grey, nil)]
+    }
+    parts += [("\n" + String(localized: "commit") + "  ", doc.body, grey, nil), (c.hash, doc.mono, .labelColor, nil)]
+    if !c.parents.isEmpty {
+        let label = c.parents.count == 1 ? String(localized: "parent") : String(localized: "parents")
+        parts += [("\n\(label)  ", doc.body, grey, nil), (c.parents.map { String($0.prefix(7)) }.joined(separator: "  "), doc.mono, .labelColor, nil)]
+    }
+    doc.header([(c.subject, .labelColor)], meta: meta(parts))
+
+    // Read as Markdown, which joins hard-wrapped lines back into paragraphs and list items; a squash
+    // merge's message is the PR's description.
+    let text = keepTrailerLines(plainText(c.body))
+    if !text.isEmpty {
+        let boxes = [doc.row(doc.card(rows: 1), 0)]
+        if let formatted = renderMarkdown(text, font: doc.body, container: boxes, linkBase: nil) {
+            doc.result.append(formatted)
+        } else {
+            doc.line([(text, doc.body, .labelColor, nil)], in: boxes)
+        }
+        doc.gap()
+    }
+
+    guard !c.files.isEmpty else { return doc.result }
+    // Very large commits list the first files only; laying out thousands of table rows is slow.
+    let shown = c.files.prefix(300)
+    let more = c.files.count - shown.count
+    let card = doc.card(rows: 1 + shown.count + (more > 0 ? 1 : 0))
+    let added = c.files.reduce(0) { $0 + ($1.added ?? 0) }, deleted = c.files.reduce(0) { $0 + ($1.deleted ?? 0) }
+    doc.line([((c.files.count == 1 ? String(localized: "1 file changed") : String(localized: "\(c.files.count) files changed")), doc.bold, .labelColor, nil),
+              ("   +\(added)", doc.bold, green, nil), ("  −\(deleted)", doc.bold, red, nil)],
+             in: [doc.row(card, 0, header: true)])
+    for (i, f) in shown.enumerated() {
+        var row: [(String, NSFont, NSColor, String?)] = []
+        if let old = f.oldPath { row.append((old + " → ", doc.mono, grey, nil)) }
+        row.append((f.path, doc.mono, .labelColor, nil))
+        if let a = f.added, let d = f.deleted {
+            row += [("   +\(a)", doc.body, green, nil), (" −\(d)", doc.body, red, nil), ("  ■■■■■", doc.body, grey, nil)]
+        } else {
+            row.append(("   " + String(localized: "binary"), doc.body, grey, nil))
+        }
+        doc.line(row, in: [doc.row(card, i + 1, padding: 6)])
+        // The bar's squares are colored one by one: green for additions, red for deletions, grey for the rest.
+        if let a = f.added, let d = f.deleted {
+            let bar = doc.result.length - 1 - 5, (g, r) = diffBarSplit(a, d)
+            for k in 0..<5 {
+                doc.result.addAttribute(.foregroundColor, value: k < g ? green : k < g + r ? red : NSColor.quaternaryLabelColor,
+                                        range: NSRange(location: bar + k, length: 1))
+            }
+        }
+    }
+    if more > 0 {
+        doc.line([(more == 1 ? String(localized: "1 more file") : String(localized: "\(more) more files"), doc.body, grey, nil)], in: [doc.row(card, shown.count + 1, padding: 6)])
+    }
+    return doc.result
+}
+
+/// Ends each line of a paragraph made of trailers ("Co-authored-by: …") with a hard break, so Markdown doesn't
+/// join them into one line.
+private func keepTrailerLines(_ text: String) -> String {
+    return text.components(separatedBy: "\n\n").map { para in
+        let lines = para.components(separatedBy: "\n")
+        guard lines.count > 1, lines.allSatisfy({ $0.range(of: "^[A-Za-z][A-Za-z0-9-]*: \\S", options: .regularExpression) != nil }) else { return para }
+        return lines.joined(separator: "  \n")
+    }.joined(separator: "\n\n")
+}
+
+/// GitHub's five-square diffstat: how many squares are green (additions) and red (deletions).
+private func diffBarSplit(_ added: Int, _ deleted: Int) -> (Int, Int) {
+    let total = added + deleted
+    guard total > 0 else { return (0, 0) }
+    let filled = min(5, total)
+    let green = Int((Double(added) / Double(total) * Double(filled)).rounded())
+    return (green, filled - green)
+}
+/// The PR and its conversation as text: the description, reviews and comments in time order, then the review
+/// threads. Each is a bordered card with a tinted header naming who wrote it, like on GitHub.
+func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAttributedString {
+    let doc = RichText()
+    let body = doc.body, bold = doc.bold
+
     /// Who and when, in a card's header (or above a comment inside a thread card).
     func byline(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, in boxes: [NSTextBlock], spacing: CGFloat = 0) {
         var parts: [(String, NSFont, NSColor, String?)] = [(who?.login ?? "ghost", bold, .labelColor, nil)]
         if let what { parts.append(("  " + what.0, bold, what.1, nil)) }
         if let date { parts.append(("  " + dateFormatter.string(from: date), body, .secondaryLabelColor, nil)) }
-        line(parts, in: boxes, spacing: spacing)
+        doc.line(parts, in: boxes, spacing: spacing)
     }
     // <head repository>/blob/<head branch>/: the fork for a PR from a fork. If the fork is gone, the base
     // repository, taken from https://github.com/<owner>/<repo>/pull/<n>.
@@ -415,49 +545,34 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         let cleaned = plainText(s)
         guard !cleaned.isEmpty else { return }
         if let formatted = renderMarkdown(cleaned, font: body, container: boxes, linkBase: linkBase) {
-            result.append(formatted)   // ends with its own newline, which carries the last block's layout
+            doc.result.append(formatted)   // ends with its own newline, which carries the last block's layout
         } else {
-            line([(cleaned, body, .labelColor, nil)], in: boxes)
+            doc.line([(cleaned, body, .labelColor, nil)], in: boxes)
         }
     }
     /// A card: a header line, then the body (if any).
     func post(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, _ text: String) {
         let hasBody = !plainText(text).isEmpty
-        let c = card(rows: hasBody ? 2 : 1)
-        byline(who, what, date, in: [row(c, 0, header: true)])
-        if hasBody { markdown(text, in: [row(c, 1)]) }
-        gap()
+        let c = doc.card(rows: hasBody ? 2 : 1)
+        byline(who, what, date, in: [doc.row(c, 0, header: true)])
+        if hasBody { markdown(text, in: [doc.row(c, 1)]) }
+        doc.gap()
     }
     func more(_ n: Int) {
-        if n > 0 { line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
+        if n > 0 { doc.line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
     }
 
-    // The header, like GitHub's: a large title in regular weight followed by its number in grey, then the
-    // state as a colored pill with who, which branches and when, set off from the conversation by a rule.
-    let titleFont = NSFont.systemFont(ofSize: TextSize.pane(22))
-    let titleStyle = NSMutableParagraphStyle()
-    titleStyle.lineHeightMultiple = 1.1
-    titleStyle.paragraphSpacing = TextSize.pane(12)
-    result.append(NSAttributedString(string: pr.title + " ", attributes: [.font: titleFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: titleStyle]))
-    result.append(NSAttributedString(string: "#\(pr.number)\n", attributes: [.font: titleFont, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: titleStyle]))
-
-    let headerRule = ruleBelow()
-    headerRule.setWidth(TextSize.pane(14), type: .absoluteValueType, for: .padding, edge: .maxY)
-    headerRule.setWidth(TextSize.pane(18), type: .absoluteValueType, for: .margin, edge: .maxY)
-    let metaStyle = NSMutableParagraphStyle()
-    metaStyle.lineHeightMultiple = 1.2
-    metaStyle.textBlocks = [headerRule]
-    // Room for the pill's left padding, and lines tall enough to hold the pill, which is drawn within them.
-    metaStyle.firstLineHeadIndent = pillPadding(bold).x
-    metaStyle.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
-    metaStyle.lineSpacing = pillPadding(bold).y * 2
+    // The state as a colored pill with who, which branches and when.
     let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
     meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
                                    attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
     meta.append(NSAttributedString(string: String(localized: "Open on GitHub"), attributes: [.font: body, .link: URL(string: pr.url) as Any]))
-    meta.append(NSAttributedString(string: "\n", attributes: [.font: body]))
-    meta.addAttribute(.paragraphStyle, value: metaStyle, range: NSRange(location: 0, length: meta.length))
-    result.append(meta)
+    doc.header([(pr.title + " ", .labelColor), ("#\(pr.number)", .secondaryLabelColor)], meta: meta) { style in
+        // Room for the pill's left padding, and lines tall enough to hold the pill, which is drawn within them.
+        style.firstLineHeadIndent = pillPadding(bold).x
+        style.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
+        style.lineSpacing = pillPadding(bold).y * 2
+    }
     post(pr.author, nil, pr.createdAt, pr.body)
 
     enum Item { case review(PullRequest.Review), comment(PullRequest.Comment) }
@@ -466,7 +581,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         pr.reviews.nodes.filter { $0.state != "COMMENTED" || !plainText($0.body).isEmpty }
             .compactMap { r in r.submittedAt.map { ($0, .review(r)) } } +
         pr.comments.nodes.map { ($0.createdAt, .comment($0)) }
-    if !items.isEmpty || pr.reviews.hidden + pr.comments.hidden > 0 { section(String(localized: "Conversation")) }
+    if !items.isEmpty || pr.reviews.hidden + pr.comments.hidden > 0 { doc.section(String(localized: "Conversation")) }
     more(pr.reviews.hidden + pr.comments.hidden)   // the oldest ones, since the query takes the latest
     for (date, item) in items.sorted(by: { $0.0 < $1.0 }) {
         switch item {
@@ -482,32 +597,32 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     if !threads.isEmpty {
         let open = threads.filter { !$0.isResolved }.count
         // Threads belong to the conversation above, so their heading sits one level in, with them.
-        section(String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count))", indented: true)
+        doc.section(String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count))", indented: true)
     }
     for t in threads {
         let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
-        let c = card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indented: true)
+        let c = doc.card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indented: true)
         let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .semibold)
         if t.isResolved {
-            line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
-                  ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [row(c, 0, header: true)])
-            gap()
+            doc.line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
+                      ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [doc.row(c, 0, header: true)])
+            doc.gap()
             continue
         }
-        line([(location, mono, .labelColor, nil)], in: [row(c, 0, header: true)])
+        doc.line([(location, mono, .labelColor, nil)], in: [doc.row(c, 0, header: true)])
         for (i, comment) in t.comments.nodes.enumerated() {
-            let cell = row(c, i + 1)
+            let cell = doc.row(c, i + 1)
             byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pane(6))
             markdown(comment.body, in: [cell])
         }
         if t.comments.hidden > 0 {
-            line([(String(localized: "\(t.comments.hidden) more on GitHub"), body, .secondaryLabelColor, nil)],
-                 in: [row(c, t.comments.nodes.count + 1)])
+            doc.line([(String(localized: "\(t.comments.hidden) more on GitHub"), body, .secondaryLabelColor, nil)],
+                     in: [doc.row(c, t.comments.nodes.count + 1)])
         }
-        gap()
+        doc.gap()
     }
     more(pr.reviewThreads.hidden)
-    return result
+    return doc.result
 }
 
 /// A review's verdict for its card header, colored like GitHub's.

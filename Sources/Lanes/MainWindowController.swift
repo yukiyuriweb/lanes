@@ -30,12 +30,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     /// What the detail list showed before a reload, so reloading the same commit returns to it.
     private enum DetailItem { case pullRequest(url: String), file(path: String) }
     private var restoreDetail: (hash: String, item: DetailItem)?
-    /// Whether the text pane shows wrapping prose (a PR) rather than a diff or summary.
+    /// Whether the text pane shows wrapping prose (a commit's summary or a PR) rather than a diff.
     private var wrapsText = false
     private let proseWidth: CGFloat = 760
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
     private var detailTouched = false
-    private var summary = ""
+    private var summary: CommitSummary?
     /// The diff in the text pane (nil while it loads), tagged with its `textToken`, so a new text size can
     /// recolor it instead of running git again.
     private var shownDiff: (token: Int, text: String?)?
@@ -260,7 +260,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         let token = detailToken
         files = []
         detailPRs = []
-        summary = ""
+        summary = nil
         fileTable.reloadData()
         fileTable.deselectAll(nil)
         detailTouched = false
@@ -363,13 +363,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     private func showSummary() {
         textToken += 1
-        setText(NSAttributedString(string: summary, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular),
-            .foregroundColor: NSColor.labelColor,
-        ]))
+        guard let summary else { return setText(NSAttributedString()) }
+        setText(renderCommit(summary, dateFormatter: dateFormatter), wraps: true)
     }
 
-    /// Diffs and summaries scroll horizontally; prose (PR conversations) wraps to the pane's width, up to
+    /// Diffs scroll horizontally; prose (summaries, PR conversations) wraps to the pane's width, up to
     /// `proseWidth` so lines stay easy to read however wide the window gets.
     private func setText(_ text: NSAttributedString, wraps: Bool = false) {
         wrapsText = wraps

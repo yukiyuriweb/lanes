@@ -5,7 +5,7 @@ A lightweight, native macOS viewer for Git history — the commit graph from VS 
 Every commit's message, refs, date, author and hash are shown in the list at all times; no hovering required.
 
 - Commit graph with colored lanes, merges and branch/tag labels
-- Click a commit to see its full message and changed files
+- Click a commit to see its message, author, committer and parents, and the lines added and deleted in each changed file
 - Click a file to see its diff
 - GitHub pull requests on the graph: a `#N` badge on each PR's commit, colored by state, with approval, unresolved review threads and a blue dot for new reviews or comments you haven't opened; select it to read the reviews and comments (needs the [GitHub CLI](https://cli.github.com), signed in)
 - Each repository in its own tab (⌘1–⌘9 switch tabs); tabs can be moved into separate windows
