@@ -717,7 +717,7 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
     var lastBlock: Int?? = .none   // identity of the previous run's innermost block; nil for raw HTML
     var lastAttrs: [NSAttributedString.Key: Any] = [:]
     var markedItems = Set<Int>()
-    var lastInTable = false
+    var lastTable: Int?   // identity of the table the previous run was in
     var spaceBefore: CGFloat = 0   // above the paragraph being built
     // Every run of one table, cell, code block or quote must share the same block object.
     var tables: [Int: NSTextTable] = [:]
@@ -735,7 +735,8 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         let blocks = run.presentationIntent?.components ?? []   // innermost first
         let block = blocks.first?.identity
         let listDepth = blocks.filter { if case .listItem = $0.kind { return true }; return false }.count
-        let inTable = blocks.contains { if case .table = $0.kind { return true }; return false }
+        let table = blocks.first { if case .table = $0.kind { return true }; return false }?.identity
+        let inTable = table != nil, lastInTable = lastTable != nil
 
         // Blocks aren't separated in the parsed text: end the previous paragraph with its own layout.
         var marker = ""
@@ -751,6 +752,14 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
                     out.addAttribute(.paragraphStyle, value: style, range: range)
                 }
             }
+            // Back-to-back tables would read as one, so an empty line of that height goes between them.
+            if inTable, lastInTable, table != lastTable {
+                let spacer = NSMutableParagraphStyle()
+                spacer.textBlocks = container
+                spacer.minimumLineHeight = font.pointSize
+                spacer.maximumLineHeight = font.pointSize
+                out.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: spacer]))
+            }
             spaceBefore = lastInTable && !inTable ? font.pointSize : 0
             if let i = blocks.firstIndex(where: { if case .listItem = $0.kind { return true }; return false }),
                !markedItems.contains(blocks[i].identity) {
@@ -763,7 +772,7 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
             }
         }
         lastBlock = .some(block)
-        lastInTable = inTable
+        lastTable = table
 
         // Boxes, outermost first: quotes get a bar on the left, code blocks a tinted box, table cells borders.
         var boxes: [NSTextBlock] = []
