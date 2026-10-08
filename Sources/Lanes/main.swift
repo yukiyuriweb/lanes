@@ -4,6 +4,10 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [MainWindowController] = []
     private var receivedOpenRequest = false
+    /// Repositories still waiting to open at launch; saved along with the open ones.
+    private var pendingRepos: [String] = []
+    /// Set once quitting starts, so the windows AppKit closes afterwards don't shrink the saved list.
+    private var isTerminating = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMenu()
@@ -21,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if paths.isEmpty {
                 openDocument(nil)
             } else {
-                paths.forEach { open(URL(fileURLWithPath: $0)) }
+                openInOrder(paths)
             }
         }
     }
@@ -32,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !isTerminating && (controllers.contains { $0.repo != nil } || !pendingRepos.isEmpty) { saveRepos() }
+        isTerminating = true
+        return .terminateNow
+    }
 
     @objc func openDocument(_ sender: Any?) {
         let panel = NSOpenPanel()
@@ -47,6 +57,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached {
             let top = Git.topLevel(of: url)
             await MainActor.run { self.show(url, topLevel: top) }
+        }
+    }
+
+    /// Opens `paths` one after another, so windows keep the given order.
+    private func openInOrder(_ paths: [String]) {
+        pendingRepos = paths
+        Task.detached {
+            for path in paths {
+                let url = URL(fileURLWithPath: path)
+                let top = Git.topLevel(of: url)
+                await MainActor.run {
+                    self.pendingRepos.removeFirst()
+                    self.show(url, topLevel: top)
+                }
+            }
         }
     }
 
@@ -77,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controllers.append(controller)
         controller.onClose = { [weak self, weak controller] in
-            guard let self else { return }
+            guard let self, !self.isTerminating else { return }
             self.controllers.removeAll { $0 === controller }
             // Closing the last window quits the app; keep its repository for the next launch.
             if self.controllers.contains(where: { $0.repo != nil }) { self.saveRepos() }
@@ -92,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Remembers the open repositories, in the order they were opened, so the next launch restores them.
     private func saveRepos() {
-        UserDefaults.standard.set(controllers.compactMap { $0.repo?.path }, forKey: "openRepos")
+        UserDefaults.standard.set(controllers.compactMap { $0.repo?.path } + pendingRepos, forKey: "openRepos")
     }
 
     @objc func selectTab(_ sender: NSMenuItem) {
