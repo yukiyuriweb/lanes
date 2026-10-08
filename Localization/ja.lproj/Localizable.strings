@@ -10,6 +10,9 @@
 "Copy" = "コピー";
 "Select All" = "すべてを選択";
 "Find…" = "検索…";
+"Window" = "ウインドウ";
+"Minimize" = "しまう";
+"Zoom" = "拡大/縮小";
 
 /* Main window */
 "Graph" = "グラフ";
