@@ -25,15 +25,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var files: [ChangedFile] = []
     /// Pull requests by the commit they're shown on (see `PullRequest.commitHash`).
     private var pullRequests: [String: [PullRequest]] = [:]
-    /// The selected commit's pull requests, listed between "Commit Details" and the files.
+    /// The selected commit's pull requests, listed first in the detail list, above "Commit Details" and the files,
+    /// so that selecting a commit opens its pull request.
     private var detailPRs: [PullRequest] = []
     /// What the detail list showed before a reload, so reloading the same commit returns to it.
-    private enum DetailItem { case pullRequest(url: String), file(path: String) }
+    private enum DetailItem { case pullRequest(url: String), summary, file(path: String) }
     private var restoreDetail: (hash: String, item: DetailItem)?
     /// Whether the text pane shows wrapping prose (a commit's summary or a PR) rather than a diff.
     private var wrapsText = false
     private let proseWidth: CGFloat = 760
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
+    /// Once loaded, it tells whether the selection was picked or restored rather than the default first row.
     private var detailTouched = false
     private var summary: CommitSummary?
     /// The diff in the text pane (nil while it loads), tagged with its `textToken`, so a new text size can
@@ -217,11 +219,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileTable.reloadData()
         guard selected >= 0 else { return }   // details still loading; they select a row when done
         let row = selected > old.count ? selected - old.count + detailPRs.count   // a file
-            : selected > detailPRs.count ? 0                                       // a PR that's gone
-            : selected
+            : selected == old.count ? (old.isEmpty && !detailTouched ? 0 : detailPRs.count)   // Commit Details, unless by default and a PR just appeared
+            : selected < detailPRs.count ? selected : 0                                         // a PR, or the first row if it's gone
         fileTable.selectRowIndexes([row], byExtendingSelection: false)
         // Selecting the same row again doesn't notify, so redraw an open PR with its new data here.
-        if row == selected && row >= 1 && row <= detailPRs.count { showPullRequest(detailPRs[row - 1]) }
+        if row == selected && row < detailPRs.count { showPullRequest(detailPRs[row]) }
     }
 
     private func apply(commits: [Commit], layout: (rows: [GraphRow], width: Int)) {
@@ -249,7 +251,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     private func selectedDetailItem() -> DetailItem? {
         let row = fileTable.selectedRow
-        if row >= 1 && row <= detailPRs.count { return .pullRequest(url: detailPRs[row - 1].url) }
+        if row >= 0 && row < detailPRs.count { return .pullRequest(url: detailPRs[row].url) }
+        if row == detailPRs.count { return .summary }
         if row > detailPRs.count && row - 1 - detailPRs.count < files.count { return .file(path: files[row - 1 - detailPRs.count].path) }
         return nil
     }
@@ -259,7 +262,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         textToken += 1
         let token = detailToken
         files = []
-        detailPRs = []
+        // Known now, so the PR rows keep their places while the rest loads.
+        detailPRs = commit.flatMap { pullRequests[$0.hash] } ?? []
         summary = nil
         fileTable.reloadData()
         fileTable.deselectAll(nil)
@@ -281,7 +285,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 self.fileTable.reloadData()
                 var row = picked ?? 0
                 switch self.detailTouched ? nil : restore {
-                case .pullRequest(let url)?: row = self.detailPRs.firstIndex { $0.url == url }.map { $0 + 1 } ?? 0
+                case .pullRequest(let url)?: row = self.detailPRs.firstIndex { $0.url == url } ?? 0
+                case .summary?: row = self.detailPRs.count
                 case .file(let path)?: row = self.files.firstIndex { $0.path == path }.map { $0 + 1 + self.detailPRs.count } ?? 0
                 case nil: break
                 }
@@ -289,6 +294,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 let changes = self.fileTable.selectedRow != row
                 self.fileTable.selectRowIndexes([row], byExtendingSelection: false)
                 if !changes { self.showDetailRow(row) }
+                // Selecting set it; keep it only if the row wasn't the default, so PRs arriving later can replace a default summary.
+                self.detailTouched = picked != nil || restore != nil
             }
         }
     }
@@ -319,7 +326,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 commitTable.reloadData(forRowIndexes: [commitTable.selectedRow], columnIndexes: [col])
             }
             if let row = detailPRs.firstIndex(where: { $0.url == pr.url }) {
-                fileTable.reloadData(forRowIndexes: [row + 1], columnIndexes: [0])
+                fileTable.reloadData(forRowIndexes: [row], columnIndexes: [0])
             }
         }
         textToken += 1
@@ -395,11 +402,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         if tableView === fileTable {
             let cell = tableView.makeView(withIdentifier: .file, owner: nil) as? NSTableCellView
                 ?? makeTextCell(.file, font: .systemFont(ofSize: TextSize.pt(12)))
-            if row == 0 {
-                cell.textField?.attributedStringValue = NSAttributedString(
-                    string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(12))])
-            } else if row <= detailPRs.count {
-                let pr = detailPRs[row - 1]
+            if row < detailPRs.count {
+                let pr = detailPRs[row]
                 let label = NSMutableAttributedString(
                     string: String(localized: "Pull Request #\(pr.number)"),
                     attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(12)), .foregroundColor: prColor(pr)])
@@ -408,6 +412,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 }
                 cell.textField?.attributedStringValue = label
                 cell.toolTip = pr.title
+            } else if row == detailPRs.count {
+                cell.textField?.attributedStringValue = NSAttributedString(
+                    string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(12))])
+                cell.toolTip = nil
             } else {
                 let f = files[row - 1 - detailPRs.count]
                 let s = NSMutableAttributedString(string: f.status + "  ", attributes: [
@@ -471,13 +479,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
     }
 
-    /// Shows a row of the detail list: the commit summary, a pull request, or a file's diff.
+    /// Shows a row of the detail list: a pull request, the commit summary, or a file's diff.
     private func showDetailRow(_ row: Int) {
-        if row == 0 {
+        if row >= 0 && row < detailPRs.count {
+            showPullRequest(detailPRs[row])
+        } else if row == detailPRs.count {
             showSummary()
-        } else if row > 0 && row <= detailPRs.count {
-            showPullRequest(detailPRs[row - 1])
-        } else if row > 0 {
+        } else if row > detailPRs.count {
             showFileDiff(files[row - 1 - detailPRs.count])
         }
     }
