@@ -1,12 +1,26 @@
 import AppKit
 
+/// A window and its tabs, as saved for the next launch.
+struct SavedWindow: Codable {
+    var frame: String?   // NSStringFromRect
+    var repos: [String]  // tab order
+    var selected = 0     // index into repos
+}
+
+/// Where to put a newly opened repository.
+enum Placement {
+    case newTab           // a new tab in the front window, or a new window if there's none
+    case window(NSRect?)  // a new window, optionally with this frame
+    case tab(of: NSWindow)
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [MainWindowController] = []
     private var receivedOpenRequest = false
-    /// Repositories still waiting to open at launch; saved along with the open ones.
-    private var pendingRepos: [String] = []
-    /// Set once quitting starts, so the windows AppKit closes afterwards don't shrink the saved list.
+    /// Saved windows not restored yet at launch; saved again along with the open ones.
+    private var pendingWindows: [SavedWindow] = []
+    /// Set once quitting starts, so the windows AppKit closes afterwards don't change the saved state.
     private var isTerminating = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -21,24 +35,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [self] in
             guard !receivedOpenRequest else { return }
             let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-            let paths = (args.isEmpty ? savedRepos() : args).filter { FileManager.default.fileExists(atPath: $0) }
-            if paths.isEmpty {
+            let windows = args.isEmpty ? savedWindows() : [SavedWindow(frame: nil, repos: Array(args))]
+            let existing = windows.compactMap { w -> SavedWindow? in
+                var w = w
+                let selected = w.repos.indices.contains(w.selected) ? w.repos[w.selected] : nil
+                w.repos = w.repos.filter { FileManager.default.fileExists(atPath: $0) }
+                w.selected = selected.flatMap(w.repos.firstIndex(of:)) ?? 0
+                return w.repos.isEmpty ? nil : w
+            }
+            if existing.isEmpty {
                 openDocument(nil)
             } else {
-                openInOrder(paths)
+                restore(existing)
             }
         }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         receivedOpenRequest = true
-        urls.forEach(open)
+        urls.forEach { open($0) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if !isTerminating && (controllers.contains { $0.repo != nil } || !pendingRepos.isEmpty) { saveRepos() }
+        if !isTerminating && (controllers.contains { $0.repo != nil } || !pendingWindows.isEmpty) { saveWindows() }
         isTerminating = true
         return .terminateNow
     }
@@ -51,47 +72,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if panel.runModal() == .OK, let url = panel.url { open(url) }
     }
 
-    /// Shows the repository containing `url`: in the window that already shows it,
-    /// in an empty window, or in a new one.
+    /// Shows the repository containing `url`: in the window that already shows it, or as a new tab.
     private func open(_ url: URL) {
         Task.detached {
             let top = Git.topLevel(of: url)
-            await MainActor.run { self.show(url, topLevel: top) }
+            await MainActor.run { _ = self.show(url, topLevel: top, placement: .newTab) }
         }
     }
 
-    /// Opens `paths` one after another, so windows keep the given order.
-    private func openInOrder(_ paths: [String]) {
-        pendingRepos = paths
-        Task.detached {
-            for path in paths {
-                let url = URL(fileURLWithPath: path)
-                let top = Git.topLevel(of: url)
-                await MainActor.run {
-                    self.pendingRepos.removeFirst()
-                    self.show(url, topLevel: top)
+    /// Reopens saved windows one repository after another, back to front, so each window gets its tabs
+    /// in order and the front window ends up in front.
+    private func restore(_ windows: [SavedWindow]) {
+        pendingWindows = windows
+        Task { @MainActor in
+            for saved in windows.reversed() {
+                var anchor: NSWindow?
+                var opened: [Int: NSWindow] = [:]
+                for (i, path) in saved.repos.enumerated() {
+                    let url = URL(fileURLWithPath: path)
+                    // Git stays off the main thread; placing the window happens back here.
+                    let top = await Task.detached { Git.topLevel(of: url) }.value
+                    let placement: Placement = anchor.map { .tab(of: $0) } ?? .window(saved.frame.map(NSRectFromString))
+                    if let window = show(url, topLevel: top, placement: placement) {
+                        anchor = anchor ?? window
+                        opened[i] = window
+                    }
                 }
+                opened[saved.selected]?.makeKeyAndOrderFront(nil)
+                // Done with this window: from now on it's saved from the open windows instead.
+                pendingWindows.removeLast()
+                saveWindows()
             }
         }
     }
 
-    private func show(_ url: URL, topLevel top: URL?) {
+    /// Returns the repository's window, or nil if `url` isn't in a repository.
+    @discardableResult
+    private func show(_ url: URL, topLevel top: URL?, placement: Placement) -> NSWindow? {
         guard let top else {
             let alert = NSAlert()
             alert.messageText = String(localized: "Not a Git repository")
             alert.informativeText = url.path
             alert.runModal()
-            return
+            return nil
         }
         if let existing = controllers.first(where: { $0.repo?.standardizedFileURL == top.standardizedFileURL }) {
             existing.showWindow(nil)
-            return
+            return existing.window
         }
-        let controller = controllers.first { $0.repo == nil } ?? newController()
+        let empty = controllers.first { $0.repo == nil }
+        let controller = empty ?? newController()
+        if let window = controller.window {
+            switch placement {
+            case .newTab:
+                // Join the front window, or the most recently used one, unless this is the empty startup window.
+                let front = (NSApp.keyWindow?.windowController as? MainWindowController).flatMap { $0 === controller ? nil : $0.window }
+                    ?? controllers.last { $0 !== controller && $0.window?.isVisible == true }?.window
+                if empty == nil, let front { (front.tabGroup?.windows.last ?? front).addTabbedWindow(window, ordered: .above) }
+            case .window(let frame):
+                if let frame { window.setFrame(frame, display: false) }
+            case .tab(let anchor):
+                if anchor !== window { (anchor.tabGroup?.windows.last ?? anchor).addTabbedWindow(window, ordered: .above) }
+            }
+        }
         controller.show(top)
         controller.showWindow(nil)
         NSDocumentController.shared.noteNewRecentDocumentURL(top)
-        saveRepos()
+        saveWindows()
+        return controller.window
     }
 
     private func newController() -> MainWindowController {
@@ -103,21 +151,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controllers.append(controller)
         controller.onClose = { [weak self, weak controller] in
             guard let self, !self.isTerminating else { return }
+            // Closing the last window quits the app; save before it goes, so it's restored as it was.
+            if !self.controllers.contains(where: { $0 !== controller && $0.repo != nil }) {
+                if controller?.repo != nil { self.saveWindows() }
+                self.controllers.removeAll { $0 === controller }
+                return
+            }
             self.controllers.removeAll { $0 === controller }
-            // Closing the last window quits the app; keep its repository for the next launch.
-            if self.controllers.contains(where: { $0.repo != nil }) { self.saveRepos() }
+            self.saveWindows()
         }
         return controller
     }
 
-    private func savedRepos() -> [String] {
+    private func savedWindows() -> [SavedWindow] {
         let defaults = UserDefaults.standard
-        return defaults.stringArray(forKey: "openRepos") ?? defaults.string(forKey: "lastRepo").map { [$0] } ?? []
+        if let data = defaults.data(forKey: "openWindows"),
+           let windows = try? JSONDecoder().decode([SavedWindow].self, from: data) { return windows }
+        // Earlier versions saved only the repositories.
+        let repos = defaults.stringArray(forKey: "openRepos") ?? defaults.string(forKey: "lastRepo").map { [$0] } ?? []
+        return repos.isEmpty ? [] : [SavedWindow(frame: nil, repos: repos)]
     }
 
-    /// Remembers the open repositories, in the order they were opened, so the next launch restores them.
-    private func saveRepos() {
-        UserDefaults.standard.set(controllers.compactMap { $0.repo?.path } + pendingRepos, forKey: "openRepos")
+    /// Remembers the open windows, front to back, with their frames and tabs, so the next launch restores them.
+    private func saveWindows() {
+        let mine = controllers.compactMap(\.window)
+        var groups: [[NSWindow]] = []
+        for window in mine where !groups.contains(where: { $0.contains(window) }) {
+            groups.append((window.tabGroup?.windows ?? [window]).filter { mine.contains($0) })
+        }
+        // Front to back by the z-order of each group's visible tab; minimized or hidden ones go last.
+        let order = NSApp.orderedWindows
+        func rank(_ g: [NSWindow]) -> Int {
+            let visible = g.first?.tabGroup?.selectedWindow ?? g.first
+            return visible.flatMap { order.firstIndex(of: $0) } ?? Int.max
+        }
+        let open = groups.sorted { rank($0) < rank($1) }.compactMap { g -> SavedWindow? in
+            let tabs = g.filter { ($0.windowController as? MainWindowController)?.repo != nil }
+            guard !tabs.isEmpty else { return nil }
+            let selected = g.first?.tabGroup?.selectedWindow ?? g.first
+            return SavedWindow(frame: NSStringFromRect((selected ?? tabs[0]).frame),
+                               repos: tabs.map { ($0.windowController as! MainWindowController).repo!.path },
+                               selected: selected.flatMap(tabs.firstIndex(of:)) ?? 0)
+        }
+        // Windows still waiting to be restored are the frontmost ones (restoring goes back to front).
+        guard let data = try? JSONEncoder().encode(pendingWindows + open) else { return }
+        UserDefaults.standard.set(data, forKey: "openWindows")
     }
 
     @objc func selectTab(_ sender: NSMenuItem) {
