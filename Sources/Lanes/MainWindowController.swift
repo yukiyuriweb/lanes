@@ -59,6 +59,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     init() {
         // TextKit 1: PR text uses text tables and blocks, which TextKit 2 can't lay out.
         textView = NSTextView(usingTextLayoutManager: false)
+        textView.textContainer?.replaceLayoutManager(PillLayoutManager())
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.minSize = .zero
@@ -133,7 +134,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
         textView.isEditable = false
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
+        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
         textView.textContainerInset = NSSize(width: 24, height: 20)
         // No wrapping: scroll horizontally like a diff viewer.
         textView.isHorizontallyResizable = true
@@ -338,7 +339,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             hash.width = TextSize.pt(75)
             description.width = max(description.minWidth, description.width - growth)
         }
-        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
+        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
         if commitTable.numberOfRows > 0 {
             commitTable.reloadData(forRowIndexes: IndexSet(integersIn: 0..<commitTable.numberOfRows),
                                    columnIndexes: IndexSet(integersIn: 0..<commitTable.numberOfColumns))
@@ -357,13 +358,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private func fitProseWidth() {
         guard wrapsText else { return }
         let available = textScroll.contentSize.width - 2 * textView.textContainerInset.width
-        textView.textContainer?.containerSize = NSSize(width: max(min(available, TextSize.pt(proseWidth)), 100), height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: max(min(available, TextSize.pane(proseWidth)), 100), height: CGFloat.greatestFiniteMagnitude)
     }
 
     private func showSummary() {
         textToken += 1
         setText(NSAttributedString(string: summary, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular),
+            .font: NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular),
             .foregroundColor: NSColor.labelColor,
         ]))
     }
