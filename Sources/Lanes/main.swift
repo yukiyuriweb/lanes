@@ -92,6 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let url = URL(fileURLWithPath: path)
                     // Git stays off the main thread; placing the window happens back here.
                     let top = await Task.detached { Git.topLevel(of: url) }.value
+                    // If the user closed what has been restored of this window so far, don't bring it back.
+                    if !opened.isEmpty {
+                        let open = opened.sorted { $0.key < $1.key }.map(\.value).filter { w in controllers.contains { $0.window === w } }
+                        guard let first = open.first else { break }
+                        anchor = first
+                    }
                     let placement: Placement = anchor.map { .tab(of: $0) } ?? .window(saved.frame.map(NSRectFromString))
                     if let window = show(url, topLevel: top, placement: placement) {
                         anchor = anchor ?? window
