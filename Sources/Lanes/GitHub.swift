@@ -81,16 +81,19 @@ enum SeenActivity {
     /// Whether an open PR has reviews or comments by others that the user hasn't opened yet.
     static func isUnread(_ pr: PullRequest, viewer: String) -> Bool {
         guard pr.state == "OPEN", let last = pr.lastActivity(excluding: viewer) else { return false }
-        let seen = (UserDefaults.standard.dictionary(forKey: key)?[pr.url] as? Double).map(Date.init(timeIntervalSince1970:))
+        let seen = (UserDefaults.standard.dictionary(forKey: key)?[entry(pr, viewer)] as? Double).map(Date.init(timeIntervalSince1970:))
         return seen.map { last > $0 } ?? true
     }
 
     static func markSeen(_ pr: PullRequest, viewer: String) {
         guard let last = pr.lastActivity(excluding: viewer) else { return }
         var seen = UserDefaults.standard.dictionary(forKey: key) ?? [:]
-        seen[pr.url] = last.timeIntervalSince1970
+        seen[entry(pr, viewer)] = last.timeIntervalSince1970
         UserDefaults.standard.set(seen, forKey: key)
     }
+
+    /// Per account as well as per PR: what's "someone else's" activity depends on who is signed in to `gh`.
+    private static func entry(_ pr: PullRequest, _ viewer: String) -> String { viewer + " " + pr.url }
 }
 
 /// Reads pull requests through the `gh` CLI, which handles authentication and finds the GitHub repository from the remotes.
