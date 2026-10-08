@@ -30,6 +30,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     /// What the detail list showed before a reload, so reloading the same commit returns to it.
     private enum DetailItem { case pullRequest(url: String), file(path: String) }
     private var restoreDetail: (hash: String, item: DetailItem)?
+    /// Whether the text pane shows wrapping prose (a PR) rather than a diff or summary.
+    private var wrapsText = false
+    private let proseWidth: CGFloat = 760
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
     private var detailTouched = false
     private var summaryText = NSAttributedString()
@@ -67,6 +70,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         window.isReleasedWhenClosed = false
         super.init(window: window)
         setUpViews()
+        textScroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: textScroll.contentView,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fitProseWidth() }
+        }
         window.center()
         // Only one window can own the autosave name; later ones are placed by the app delegate.
         window.setFrameAutosaveName("MainWindow")
@@ -312,17 +320,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         setText(renderPullRequest(pr, dateFormatter: dateFormatter), wraps: true)
     }
 
+    private func fitProseWidth() {
+        guard wrapsText else { return }
+        let available = textScroll.contentSize.width - 2 * textView.textContainerInset.width
+        textView.textContainer?.containerSize = NSSize(width: max(min(available, proseWidth), 100), height: CGFloat.greatestFiniteMagnitude)
+    }
+
     private func showSummary() {
         textToken += 1
         setText(summaryText)
     }
 
-    /// Diffs and summaries scroll horizontally; prose (PR conversations) wraps to the pane's width.
+    /// Diffs and summaries scroll horizontally; prose (PR conversations) wraps to the pane's width, up to
+    /// `proseWidth` so lines stay easy to read however wide the window gets.
     private func setText(_ text: NSAttributedString, wraps: Bool = false) {
+        wrapsText = wraps
         textView.isHorizontallyResizable = !wraps
-        textView.textContainer?.widthTracksTextView = wraps
+        textView.textContainer?.widthTracksTextView = false
         if wraps {
             textView.frame.size.width = textScroll.contentSize.width
+            fitProseWidth()
         } else {
             textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         }
