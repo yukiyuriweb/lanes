@@ -10,7 +10,7 @@ private extension NSUserInterfaceItemIdentifier {
 }
 
 @MainActor
-final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let commitTable = NSTableView()
     private let fileTable = NSTableView()
     private let textView: NSTextView
@@ -19,6 +19,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let detailSplit = NSSplitView()
 
     private(set) var repo: URL?
+    var onClose: (() -> Void)?
     private var commits: [Commit] = []
     private var rows: [GraphRow] = []
     private var files: [ChangedFile] = []
@@ -27,8 +28,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var detailToken = 0
     /// Bumped whenever the text pane is pointed at something else; guards diff loads.
     private var textToken = 0
-    /// Bumped on each open request, so a slow earlier request can't override a later one.
-    private var openToken = 0
     /// Bumped on each history reload, so an older reload can't overwrite a newer one.
     private var loadToken = 0
 
@@ -45,10 +44,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Lanes"
+        // The controller owns the window; AppKit releasing it on close as well would over-release it.
+        window.isReleasedWhenClosed = false
         super.init(window: window)
         setUpViews()
         window.center()
+        // Only one window can own the autosave name; later ones are placed by the app delegate.
         window.setFrameAutosaveName("MainWindow")
+        window.tabbingIdentifier = "Lanes"
+        window.delegate = self
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -125,31 +129,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    func windowWillClose(_ notification: Notification) { onClose?() }
+
     // MARK: - Loading
 
-    func open(_ url: URL) {
-        openToken += 1
-        let token = openToken
-        Task.detached {
-            let top = Git.topLevel(of: url)
-            await MainActor.run {
-                guard token == self.openToken else { return }
-                self.didResolve(url, topLevel: top)
-            }
-        }
-    }
-
-    private func didResolve(_ url: URL, topLevel top: URL?) {
-        guard let top else {
-            let alert = NSAlert()
-            alert.messageText = String(localized: "Not a Git repository")
-            alert.informativeText = url.path
-            alert.runModal()
-            return
-        }
+    /// Shows the repository whose top-level directory is `top`.
+    func show(_ top: URL) {
         repo = top
-        UserDefaults.standard.set(top.path, forKey: "lastRepo")
-        NSDocumentController.shared.noteNewRecentDocumentURL(top)
         window?.title = top.lastPathComponent
         window?.subtitle = top.path
         commits = []

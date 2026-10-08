@@ -20,7 +20,7 @@ Lanes is a read-only, native macOS viewer for Git history (Swift + AppKit, no de
 
 - **Run git only through `Git.run`.** It sets `core.quotepath=false` and `log.showSignature=false`, and `run(_:in:limit:)` stops reading (and kills git) past a byte limit. Use the limit for anything whose output can be huge, such as diffs.
 - **Never run git on the main thread.** Git can block indefinitely, e.g. on a macOS privacy prompt when its config lives in a protected or cloud-synced folder, and that would freeze the UI. Use `Task.detached` and come back with `MainActor.run`.
-- **Guard every async result with a generation token** (`openToken`, `loadToken`, `detailToken`, `textToken`), so that a slower, older request can't overwrite a newer one. A new async flow gets its own token.
+- **Guard every async result with a generation token** (`loadToken`, `detailToken`, `textToken`), so that a slower, older request can't overwrite a newer one. A new async flow gets its own token.
 - **Pass file paths to git with `--literal-pathspecs`**, so names like `a*b` or `:(glob)x` aren't treated as patterns.
 - **Diff a root commit against the empty tree from `git hash-object -t tree /dev/null`**, not a hard-coded SHA-1 ID, so SHA-256 repositories work.
 - **Add `HEAD` to `git log` only if it resolves.** An unborn HEAD makes the whole command fail.
