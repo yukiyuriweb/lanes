@@ -3,7 +3,12 @@ import Foundation
 struct PullRequest: Decodable {
     struct Author: Decodable { let login: String }
     struct Oid: Decodable { let oid: String }
-    struct Nodes<T: Decodable>: Decodable { let nodes: [T] }
+    /// One page of a connection. Large PRs can have more than the query asks for; `hidden` counts the rest.
+    struct Nodes<T: Decodable>: Decodable {
+        let nodes: [T]
+        let totalCount: Int?
+        var hidden: Int { max(0, (totalCount ?? nodes.count) - nodes.count) }
+    }
 
     struct Review: Decodable {
         let author: Author?
@@ -70,10 +75,11 @@ enum GitHub {
               nodes {
                 number title url state isDraft headRefName baseRefName headRefOid mergeCommit { oid }
                 reviewDecision author { login } createdAt body
-                reviews(last: 50) { nodes { author { login } state body submittedAt } }
-                comments(last: 100) { nodes { author { login } body createdAt } }
+                reviews(last: 50) { totalCount nodes { author { login } state body submittedAt } }
+                comments(last: 100) { totalCount nodes { author { login } body createdAt } }
                 reviewThreads(first: 50) {
-                  nodes { isResolved path line originalLine comments(first: 30) { nodes { author { login } body createdAt } } }
+                  totalCount
+                  nodes { isResolved path line originalLine comments(first: 30) { totalCount nodes { author { login } body createdAt } } }
                 }
               }
             }

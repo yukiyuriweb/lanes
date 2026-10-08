@@ -76,7 +76,10 @@ final class DescriptionCellView: NSTableCellView {
             default: break
             }
             // Merged PRs often keep threads nobody marked resolved, so only count them while open.
-            if pr.state == "OPEN", pr.unresolvedThreads > 0 { text += " 💬\(pr.unresolvedThreads)" }
+            if pr.state == "OPEN", pr.unresolvedThreads > 0 || pr.reviewThreads.hidden > 0 {
+                // Threads beyond the first page aren't fetched, so the count is then a lower bound.
+                text += " 💬\(pr.unresolvedThreads)" + (pr.reviewThreads.hidden > 0 ? "+" : "")
+            }
             let label = NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: textColor])
             let size = label.size()
             let rect = NSRect(x: x, y: (bounds.height - pillHeight) / 2, width: ceil(size.width) + 10, height: pillHeight)
@@ -199,6 +202,9 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         let cleaned = plainText(s)
         if !cleaned.isEmpty { add(cleaned + "\n") }
     }
+    func more(_ n: Int) {
+        if n > 0 { add(String(localized: "\(n) more on GitHub") + "\n\n", body, .secondaryLabelColor) }
+    }
 
     add("#\(pr.number) \(pr.title)\n", .boldSystemFont(ofSize: 15))
     add(prStateName(pr), bold, prColor(pr))
@@ -217,6 +223,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     if !items.isEmpty {
         add("\n── " + String(localized: "Conversation") + " ──\n\n", bold, .secondaryLabelColor)
     }
+    more(pr.reviews.hidden + pr.comments.hidden)   // the oldest ones, since the query takes the latest
     for (date, item) in items.sorted(by: { $0.0 < $1.0 }) {
         switch item {
         case .review(let r):
@@ -233,7 +240,7 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let threads = pr.reviewThreads.nodes
     if !threads.isEmpty {
         let open = threads.filter { !$0.isResolved }.count
-        add("\n── " + String(localized: "Review Threads") + " (\(open)/\(threads.count)) ──\n\n", bold, .secondaryLabelColor)
+        add("\n── " + String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count)) ──\n\n", bold, .secondaryLabelColor)
     }
     for t in threads {
         let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
@@ -249,8 +256,10 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
             text(c.body)
             add("\n")
         }
+        more(t.comments.hidden)
         indent = 0
     }
+    more(pr.reviewThreads.hidden)
     return result
 }
 
@@ -264,15 +273,32 @@ private func reviewStateName(_ state: String) -> String {
 }
 
 /// Comment bodies are Markdown with embedded HTML (bots use plenty); show them as readable plain text.
+/// Code blocks and code spans are kept as written, so text like `Array<Foo>` survives.
 private func plainText(_ s: String) -> String {
-    var t = s.replacingOccurrences(of: "\r\n", with: "\n")
-    t = t.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
-    t = t.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    let t = s.replacingOccurrences(of: "\r\n", with: "\n")
+    let code = try! NSRegularExpression(pattern: "```[\\s\\S]*?(?:```|$)|`[^`\\n]+`")
+    var result = ""
+    var prose = t.startIndex
+    for match in code.matches(in: t, range: NSRange(t.startIndex..., in: t)) {
+        let range = Range(match.range, in: t)!
+        result += stripMarkup(String(t[prose..<range.lowerBound])) + t[range]
+        prose = range.upperBound
+    }
+    result += stripMarkup(String(t[prose...]))
+    result = result.replacingOccurrences(of: "[ \t]+\n", with: "\n", options: .regularExpression)
+    result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+    return result.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Removes HTML comments, the HTML tags GitHub renders (but not other angle brackets, as in `x < y` or
+/// `List<String>`), and image markup, and decodes common entities.
+private func stripMarkup(_ s: String) -> String {
+    let tags = "a|b|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|relative-time|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul"
+    var t = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
+    t = t.replacingOccurrences(of: "</?(?:\(tags))\\b[^<>]*>", with: "", options: .regularExpression)
     t = t.replacingOccurrences(of: "!\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)   // ![alt](image) → alt
     for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
         t = t.replacingOccurrences(of: entity, with: char)
     }
-    t = t.replacingOccurrences(of: "[ \t]+\n", with: "\n", options: .regularExpression)
-    t = t.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-    return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    return t
 }
