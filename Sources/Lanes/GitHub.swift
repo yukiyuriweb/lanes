@@ -71,8 +71,11 @@ struct PullRequest: Decodable {
     /// resolved threads doesn't count: there's nothing left to do there, and those threads show collapsed.
     func lastActivity(excluding viewer: String) -> Date? {
         // A thread comment arrives in a review of its own, empty unless it has a summary; count such
-        // comments through their (unresolved) thread instead of through that review.
-        let reviews = reviews.nodes.filter { $0.state != "COMMENTED" || !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        // comments through their (unresolved) thread instead of through that review. When not every thread
+        // was fetched, those reviews still count, so replies in the missing threads aren't lost.
+        // "Empty" is judged like the conversation view does, so a review counts only if it's shown.
+        let threadsComplete = reviewThreads.hidden == 0
+        let reviews = reviews.nodes.filter { !threadsComplete || $0.state != "COMMENTED" || !plainText($0.body).isEmpty }
             .compactMap { r in r.author?.login == viewer ? nil : r.submittedAt }
         let threadComments = reviewThreads.nodes.filter { !$0.isResolved }
             .flatMap { $0.comments.nodes + ($0.latestComment?.nodes ?? []) }
