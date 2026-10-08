@@ -261,8 +261,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }
 
     private func showPullRequest(_ pr: PullRequest) {
-        if SeenActivity.isUnread(pr, viewer: viewer) {
-            SeenActivity.markSeen(pr, viewer: viewer)
+        // Recorded for PRs of any state, so a closed PR the user has read doesn't turn unread if it's reopened.
+        let wasUnread = SeenActivity.isUnread(pr, viewer: viewer)
+        SeenActivity.markSeen(pr, viewer: viewer)
+        if wasUnread {
             let col = commitTable.column(withIdentifier: .description)
             if commitTable.selectedRow >= 0 && col >= 0 {
                 commitTable.reloadData(forRowIndexes: [commitTable.selectedRow], columnIndexes: [col])
