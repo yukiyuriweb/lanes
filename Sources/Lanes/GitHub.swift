@@ -64,12 +64,40 @@ struct PullRequest: Decodable {
         if latest.values.contains("APPROVED") { return "APPROVED" }
         return nil
     }
+
+    /// When someone other than `viewer` last reviewed or commented, or nil if nobody else has.
+    func lastActivity(excluding viewer: String) -> Date? {
+        let reviews = reviews.nodes.compactMap { r in r.author?.login == viewer ? nil : r.submittedAt }
+        let comments = (comments.nodes + reviewThreads.nodes.flatMap(\.comments.nodes))
+            .compactMap { c in c.author?.login == viewer ? nil : c.createdAt }
+        return (reviews + comments).max()
+    }
+}
+
+/// Remembers, per pull request, the latest activity the user has looked at, to mark open PRs with newer activity.
+enum SeenActivity {
+    private static let key = "seenPRActivity"
+
+    /// Whether an open PR has reviews or comments by others that the user hasn't opened yet.
+    static func isUnread(_ pr: PullRequest, viewer: String) -> Bool {
+        guard pr.state == "OPEN", let last = pr.lastActivity(excluding: viewer) else { return false }
+        let seen = (UserDefaults.standard.dictionary(forKey: key)?[pr.url] as? Double).map(Date.init(timeIntervalSince1970:))
+        return seen.map { last > $0 } ?? true
+    }
+
+    static func markSeen(_ pr: PullRequest, viewer: String) {
+        guard let last = pr.lastActivity(excluding: viewer) else { return }
+        var seen = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        seen[pr.url] = last.timeIntervalSince1970
+        UserDefaults.standard.set(seen, forKey: key)
+    }
 }
 
 /// Reads pull requests through the `gh` CLI, which handles authentication and finds the GitHub repository from the remotes.
 enum GitHub {
     private static let query = """
         query($owner: String!, $repo: String!) {
+          viewer { login }
           repository(owner: $owner, name: $repo) {
             pullRequests(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) {
               nodes {
@@ -87,9 +115,9 @@ enum GitHub {
         }
         """
 
-    /// The most recently updated pull requests, or nil when `gh` is missing, not signed in,
-    /// or the repository isn't on GitHub.
-    static func pullRequests(in repo: URL) -> [PullRequest]? {
+    /// The most recently updated pull requests and the signed-in user's login, or nil when `gh` is missing,
+    /// not signed in, or the repository isn't on GitHub.
+    static func pullRequests(in repo: URL) -> (prs: [PullRequest], viewer: String)? {
         // Apps launched from Finder don't get the shell's PATH, so look in the usual install locations.
         guard let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
             .first(where: FileManager.default.isExecutableFile(atPath:))
@@ -112,12 +140,15 @@ enum GitHub {
         struct Response: Decodable {
             struct Data: Decodable {
                 struct Repository: Decodable { let pullRequests: PullRequest.Nodes<PullRequest> }
+                let viewer: PullRequest.Author
                 let repository: Repository?
             }
             let data: Data
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(Response.self, from: data))?.data.repository?.pullRequests.nodes
+        guard let response = try? decoder.decode(Response.self, from: data).data, let repository = response.repository
+        else { return nil }
+        return (repository.pullRequests.nodes, response.viewer.login)
     }
 }

@@ -7,7 +7,7 @@ Every commit's message, refs, date, author and hash are shown in the list at all
 - Commit graph with colored lanes, merges and branch/tag labels
 - Click a commit to see its full message and changed files
 - Click a file to see its diff
-- GitHub pull requests on the graph: a `#N` badge on each PR's commit, colored by state, with approval and unresolved review threads; select it to read the reviews and comments (needs the [GitHub CLI](https://cli.github.com), signed in)
+- GitHub pull requests on the graph: a `#N` badge on each PR's commit, colored by state, with approval, unresolved review threads and a blue dot for new reviews or comments you haven't opened; select it to read the reviews and comments (needs the [GitHub CLI](https://cli.github.com), signed in)
 - One window per repository, with native tabs (⌘1–⌘9 switch tabs)
 - Written in Swift with AppKit only — no Electron, no dependencies
 
