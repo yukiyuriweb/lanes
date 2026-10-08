@@ -31,6 +31,7 @@ This produces `build/Lanes.app`. Move it to `/Applications` if you like.
 - Launch the app and choose a repository folder (⌘O). Each repository opens in a new tab, and the windows and tabs that were open, with their positions and sizes, come back on the next launch.
 - From a terminal: `open -a Lanes .`
 - ⌘R reloads the history and pull requests (e.g. after committing from the terminal, or to check for new reviews).
+- ⌘+ / ⌘− / ⌘0 make the text bigger, smaller or back to the default size, in every window.
 
 The most recent 20,000 commits across all local branches, remote branches and tags are shown.
 
