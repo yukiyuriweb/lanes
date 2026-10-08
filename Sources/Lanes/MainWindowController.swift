@@ -35,6 +35,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var wrapsText = false
     private let proseWidth: CGFloat = 760
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
+    /// Once loaded, it tells whether the selection was picked or restored rather than the default first row.
     private var detailTouched = false
     private var summary: CommitSummary?
     /// The diff in the text pane (nil while it loads), tagged with its `textToken`, so a new text size can
@@ -218,8 +219,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileTable.reloadData()
         guard selected >= 0 else { return }   // details still loading; they select a row when done
         let row = selected > old.count ? selected - old.count + detailPRs.count   // a file
-            : selected == old.count ? (old.isEmpty ? 0 : detailPRs.count)          // Commit Details, unless a PR just appeared
-            : selected < detailPRs.count ? selected : 0                            // a PR, or the first row if it's gone
+            : selected == old.count ? (old.isEmpty && !detailTouched ? 0 : detailPRs.count)   // Commit Details, unless by default and a PR just appeared
+            : selected < detailPRs.count ? selected : 0                                         // a PR, or the first row if it's gone
         fileTable.selectRowIndexes([row], byExtendingSelection: false)
         // Selecting the same row again doesn't notify, so redraw an open PR with its new data here.
         if row == selected && row < detailPRs.count { showPullRequest(detailPRs[row]) }
@@ -293,6 +294,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 let changes = self.fileTable.selectedRow != row
                 self.fileTable.selectRowIndexes([row], byExtendingSelection: false)
                 if !changes { self.showDetailRow(row) }
+                // Selecting set it; keep it only if the row wasn't the default, so PRs arriving later can replace a default summary.
+                self.detailTouched = picked != nil || restore != nil
             }
         }
     }
