@@ -3,6 +3,7 @@ import Foundation
 struct PullRequest: Decodable {
     struct Author: Decodable { let login: String }
     struct Oid: Decodable { let oid: String }
+    struct Repository: Decodable { let url: String }
     /// One page of a connection. Large PRs can have more than the query asks for; `hidden` counts the rest.
     struct Nodes<T: Decodable>: Decodable {
         let nodes: [T]
@@ -41,6 +42,8 @@ struct PullRequest: Decodable {
     let headRefName: String
     let baseRefName: String
     let headRefOid: String
+    /// The repository the branch lives in (a fork for PRs from forks); nil if it was deleted.
+    let headRepository: Repository?
     let mergeCommit: Oid?
     let reviewDecision: String?
     let author: Author?
@@ -114,7 +117,7 @@ enum GitHub {
           repository(owner: $owner, name: $repo) {
             pullRequests(first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) {
               nodes {
-                number title url state isDraft headRefName baseRefName headRefOid mergeCommit { oid }
+                number title url state isDraft headRefName baseRefName headRefOid headRepository { url } mergeCommit { oid }
                 reviewDecision author { login } createdAt body
                 reviews(last: 50) { totalCount nodes { author { login } state body submittedAt } }
                 comments(last: 100) { totalCount nodes { author { login } body createdAt } }

@@ -241,13 +241,15 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         if let date { parts.append(("  " + dateFormatter.string(from: date), body, .secondaryLabelColor, nil)) }
         line(parts, in: boxes)
     }
-    // https://github.com/<owner>/<repo>/pull/<n> → https://github.com/<owner>/<repo>/blob/<head branch>/
-    let linkBase = URL(string: pr.url).flatMap { url -> URL? in
+    // <head repository>/blob/<head branch>/: the fork for a PR from a fork. If the fork is gone, the base
+    // repository, taken from https://github.com/<owner>/<repo>/pull/<n>.
+    let linkBase: URL? = {
+        guard let branch = pr.headRefName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        if let head = pr.headRepository?.url { return URL(string: "\(head)/blob/\(branch)/") }
+        guard let url = URL(string: pr.url), url.pathComponents.count >= 3 else { return nil }
         let parts = url.pathComponents   // ["/", owner, repo, "pull", n]
-        guard parts.count >= 3, let branch = pr.headRefName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-        else { return nil }
         return URL(string: "https://\(url.host ?? "github.com")/\(parts[1])/\(parts[2])/blob/\(branch)/")
-    }
+    }()
     func markdown(_ s: String, in boxes: [NSTextBlock]) {
         let cleaned = plainText(s)
         guard !cleaned.isEmpty else { return }
@@ -377,8 +379,10 @@ private func markdownCode(_ s: String) -> String {
         let fence = String(repeating: "`", count: max(3, longest + 1))
         return "\n\n" + fence + "\n" + inner.trimmingCharacters(in: .newlines) + "\n" + fence + "\n\n"
     }
-    let ticks = String(repeating: "`", count: inner.contains("`") ? 2 : 1)
-    return ticks + (ticks.count > 1 ? " \(inner) " : inner) + ticks
+    // Likewise for a span: delimiters longer than any backtick run inside, padded if it starts or ends with one.
+    let longest = inner.components(separatedBy: CharacterSet(charactersIn: "`").inverted).map(\.count).max() ?? 0
+    let ticks = String(repeating: "`", count: longest + 1)
+    return ticks + (longest > 0 ? " \(inner) " : inner) + ticks
 }
 
 /// Removes HTML comments, the HTML tags GitHub renders (but not other angle brackets, as in `x < y` or
