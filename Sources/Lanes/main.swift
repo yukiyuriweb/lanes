@@ -95,6 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(controllers.compactMap { $0.repo?.path }, forKey: "openRepos")
     }
 
+    @objc func selectTab(_ sender: NSMenuItem) {
+        guard let window = NSApp.keyWindow else { return }
+        let tabs = window.tabGroup?.windows ?? [window]
+        let index = sender.tag == 9 ? tabs.count - 1 : sender.tag - 1
+        if index < tabs.count { tabs[index].makeKeyAndOrderFront(nil) }
+    }
+
     private func makeMenu() -> NSMenu {
         let main = NSMenu()
 
@@ -121,6 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: String(localized: "Window"))
         windowMenu.addItem(withTitle: String(localized: "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: String(localized: "Zoom"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        // Browser-style tab shortcuts: ⌘1–⌘8 select that tab, ⌘9 the last one. Hidden to keep the menu short.
+        for n in 1...9 {
+            let item = windowMenu.addItem(withTitle: n == 9 ? "Select Last Tab" : "Select Tab \(n)",
+                                          action: #selector(selectTab(_:)), keyEquivalent: "\(n)")
+            item.tag = n
+            item.isHidden = true
+            item.allowsKeyEquivalentWhenHidden = true
+        }
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = windowMenu
         NSApp.windowsMenu = windowMenu
 
