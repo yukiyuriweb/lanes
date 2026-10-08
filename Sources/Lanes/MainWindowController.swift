@@ -27,6 +27,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var detailToken = 0
     /// Bumped whenever the text pane is pointed at something else; guards diff loads.
     private var textToken = 0
+    /// Bumped on each open request, so a slow earlier request can't override a later one.
+    private var openToken = 0
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -124,9 +126,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: - Loading
 
     func open(_ url: URL) {
+        openToken += 1
+        let token = openToken
         Task.detached {
             let top = Git.topLevel(of: url)
-            await MainActor.run { self.didResolve(url, topLevel: top) }
+            await MainActor.run {
+                guard token == self.openToken else { return }
+                self.didResolve(url, topLevel: top)
+            }
         }
     }
 

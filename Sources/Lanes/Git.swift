@@ -63,8 +63,11 @@ enum Git {
 
     static func log(in repo: URL, limit: Int) -> [Commit] {
         let fmt = "%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1e"
-        guard let out = run(["log", "--branches", "--remotes", "--tags", "HEAD", "--date-order",
-                             "--decorate=full", "--max-count=\(limit)", "--format=\(fmt)"], in: repo)
+        var revs = ["--branches", "--remotes", "--tags"]
+        // HEAD adds a detached HEAD; an unborn HEAD would make the whole log fail.
+        if run(["rev-parse", "--verify", "--quiet", "HEAD"], in: repo) != nil { revs.append("HEAD") }
+        guard let out = run(["log"] + revs + ["--date-order", "--decorate=full", "--max-count=\(limit)", "--format=\(fmt)"],
+                            in: repo)
         else { return [] }
         var commits: [Commit] = []
         for record in out.split(separator: "\u{1e}") {
