@@ -36,6 +36,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var loadToken = 0
     /// Bumped on each pull request fetch, so an older fetch can't overwrite a newer one.
     private var prToken = 0
+    /// The GitHub login `gh` is signed in as; their own reviews and comments don't make a PR unread.
+    private var viewer = ""
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -172,7 +174,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             let prs = GitHub.pullRequests(in: repo)
             await MainActor.run {
                 guard prToken == self.prToken, repo == self.repo else { return }
-                self.apply(pullRequests: prs ?? [])
+                self.viewer = prs?.viewer ?? ""
+                self.apply(pullRequests: prs?.prs ?? [])
             }
         }
     }
@@ -258,6 +261,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }
 
     private func showPullRequest(_ pr: PullRequest) {
+        // Recorded for PRs of any state, so a closed PR the user has read doesn't turn unread if it's reopened.
+        let wasUnread = SeenActivity.isUnread(pr, viewer: viewer)
+        SeenActivity.markSeen(pr, viewer: viewer)
+        if wasUnread {
+            let col = commitTable.column(withIdentifier: .description)
+            if commitTable.selectedRow >= 0 && col >= 0 {
+                commitTable.reloadData(forRowIndexes: [commitTable.selectedRow], columnIndexes: [col])
+            }
+            if let row = detailPRs.firstIndex(where: { $0.url == pr.url }) {
+                fileTable.reloadData(forRowIndexes: [row + 1], columnIndexes: [0])
+            }
+        }
         textToken += 1
         setText(renderPullRequest(pr, dateFormatter: dateFormatter), wraps: true)
     }
@@ -297,9 +312,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                     string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
             } else if row <= detailPRs.count {
                 let pr = detailPRs[row - 1]
-                cell.textField?.attributedStringValue = NSAttributedString(
+                let label = NSMutableAttributedString(
                     string: String(localized: "Pull Request #\(pr.number)"),
                     attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: prColor(pr)])
+                if SeenActivity.isUnread(pr, viewer: viewer) {
+                    label.append(NSAttributedString(string: "  ●", attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.systemBlue]))
+                }
+                cell.textField?.attributedStringValue = label
                 cell.toolTip = pr.title
             } else {
                 let f = files[row - 1 - detailPRs.count]
@@ -334,6 +353,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             cell.color = Palette.color(rows[row].color)
             cell.commit = commit
             cell.pullRequests = pullRequests[commit.hash] ?? []
+            cell.unread = Set(cell.pullRequests.filter { SeenActivity.isUnread($0, viewer: viewer) }.map(\.url))
             cell.toolTip = commit.subject
             return cell
         default:

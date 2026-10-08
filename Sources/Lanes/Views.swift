@@ -57,6 +57,8 @@ final class GraphCellView: NSTableCellView {
 final class DescriptionCellView: NSTableCellView {
     var commit: Commit? { didSet { needsDisplay = true } }
     var pullRequests: [PullRequest] = [] { didSet { needsDisplay = true } }
+    /// URLs of the PRs with activity the user hasn't opened; their badges get a dot.
+    var unread: Set<String> = [] { didSet { needsDisplay = true } }
     var color: NSColor = .systemBlue
 
     override var isFlipped: Bool { true }
@@ -82,7 +84,8 @@ final class DescriptionCellView: NSTableCellView {
             }
             let label = NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: textColor])
             let size = label.size()
-            let rect = NSRect(x: x, y: (bounds.height - pillHeight) / 2, width: ceil(size.width) + 10, height: pillHeight)
+            let dot: CGFloat = unread.contains(pr.url) ? 10 : 0
+            let rect = NSRect(x: x, y: (bounds.height - pillHeight) / 2, width: ceil(size.width) + 10 + dot, height: pillHeight)
             let tint = prColor(pr)
             let pill = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: pillHeight / 2, yRadius: pillHeight / 2)
             tint.withAlphaComponent(0.25).setFill()
@@ -90,6 +93,10 @@ final class DescriptionCellView: NSTableCellView {
             tint.setStroke()
             pill.stroke()
             label.draw(at: NSPoint(x: rect.minX + 5, y: rect.minY + (pillHeight - size.height) / 2))
+            if dot > 0 {
+                NSColor.systemBlue.setFill()
+                NSBezierPath(ovalIn: NSRect(x: rect.maxX - 12, y: rect.midY - 3.5, width: 7, height: 7)).fill()
+            }
             x = rect.maxX + 4
         }
 
