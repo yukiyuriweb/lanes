@@ -35,7 +35,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private let proseWidth: CGFloat = 760
     /// Set when the user selects something in the detail list while it loads, so a restore doesn't override it.
     private var detailTouched = false
-    private var summaryText = NSAttributedString()
+    private var summary = ""
     /// Bumped when the selected commit changes; guards loading its files and summary.
     private var detailToken = 0
     /// Bumped whenever the text pane is pointed at something else; guards diff loads.
@@ -70,6 +70,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         window.isReleasedWhenClosed = false
         super.init(window: window)
         setUpViews()
+        NotificationCenter.default.addObserver(forName: TextSize.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTextSize() }
+        }
         textScroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: textScroll.contentView,
                                                queue: .main) { [weak self] _ in
@@ -95,12 +98,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
         addColumn(.graph, String(localized: "Graph"), width: 80)
         addColumn(.description, String(localized: "Description"), width: 600, flexible: true)
-        addColumn(.date, String(localized: "Date"), width: 120)
+        addColumn(.date, String(localized: "Date"), width: TextSize.pt(120))
         addColumn(.author, String(localized: "Author"), width: 130)
-        addColumn(.hash, String(localized: "Commit"), width: 75)
+        addColumn(.hash, String(localized: "Commit"), width: TextSize.pt(75))
 
         commitTable.style = .fullWidth
-        commitTable.rowHeight = 22
+        commitTable.rowHeight = TextSize.pt(22)
         commitTable.intercellSpacing = .zero
         commitTable.usesAlternatingRowBackgroundColors = true
         commitTable.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
@@ -117,7 +120,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileTable.addTableColumn(fileCol)
         fileTable.headerView = nil
         fileTable.style = .fullWidth
-        fileTable.rowHeight = 20
+        fileTable.rowHeight = TextSize.pt(20)
         fileTable.dataSource = self
         fileTable.delegate = self
 
@@ -127,7 +130,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
         textView.isEditable = false
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
         textView.textContainerInset = NSSize(width: 24, height: 20)
         // No wrapping: scroll horizontally like a diff viewer.
         textView.isHorizontallyResizable = true
@@ -253,7 +256,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         let token = detailToken
         files = []
         detailPRs = []
-        summaryText = NSAttributedString()
+        summary = ""
         fileTable.reloadData()
         fileTable.deselectAll(nil)
         detailTouched = false
@@ -267,10 +270,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 guard token == self.detailToken else { return }
                 self.files = files
                 self.detailPRs = self.pullRequests[commit.hash] ?? []
-                self.summaryText = NSAttributedString(string: summary, attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                    .foregroundColor: NSColor.labelColor,
-                ])
+                self.summary = summary
                 // A row the user picked while loading (Commit Details, or a PR row that arrived first) stays selected.
                 // Read it before reloading, which clears the selection.
                 let picked = self.detailTouched ? max(self.fileTable.selectedRow, 0) : nil
@@ -320,15 +320,42 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         setText(renderPullRequest(pr, dateFormatter: dateFormatter), wraps: true)
     }
 
+    /// Redraws everything at the new text size, keeping the selection and what the text pane shows.
+    private func applyTextSize() {
+        commitTable.rowHeight = TextSize.pt(22)
+        fileTable.rowHeight = TextSize.pt(20)
+        // Dates and hashes have a fixed length, so their columns follow the text size; the description
+        // column gives or takes the difference, so the table keeps its width.
+        if let date = commitTable.tableColumn(withIdentifier: .date), let hash = commitTable.tableColumn(withIdentifier: .hash),
+           let description = commitTable.tableColumn(withIdentifier: .description) {
+            let growth = TextSize.pt(120) + TextSize.pt(75) - date.width - hash.width
+            date.width = TextSize.pt(120)
+            hash.width = TextSize.pt(75)
+            description.width = max(description.minWidth, description.width - growth)
+        }
+        textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular)
+        if commitTable.numberOfRows > 0 {
+            commitTable.reloadData(forRowIndexes: IndexSet(integersIn: 0..<commitTable.numberOfRows),
+                                   columnIndexes: IndexSet(integersIn: 0..<commitTable.numberOfColumns))
+        }
+        if fileTable.numberOfRows > 0 {
+            fileTable.reloadData(forRowIndexes: IndexSet(integersIn: 0..<fileTable.numberOfRows), columnIndexes: [0])
+        }
+        if fileTable.selectedRow >= 0 { showDetailRow(fileTable.selectedRow) }
+    }
+
     private func fitProseWidth() {
         guard wrapsText else { return }
         let available = textScroll.contentSize.width - 2 * textView.textContainerInset.width
-        textView.textContainer?.containerSize = NSSize(width: max(min(available, proseWidth), 100), height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: max(min(available, TextSize.pt(proseWidth)), 100), height: CGFloat.greatestFiniteMagnitude)
     }
 
     private func showSummary() {
         textToken += 1
-        setText(summaryText)
+        setText(NSAttributedString(string: summary, attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]))
     }
 
     /// Diffs and summaries scroll horizontally; prose (PR conversations) wraps to the pane's width, up to
@@ -358,28 +385,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
         if tableView === fileTable {
             let cell = tableView.makeView(withIdentifier: .file, owner: nil) as? NSTableCellView
-                ?? makeTextCell(.file, font: .systemFont(ofSize: 12))
+                ?? makeTextCell(.file, font: .systemFont(ofSize: TextSize.pt(12)))
             if row == 0 {
                 cell.textField?.attributedStringValue = NSAttributedString(
-                    string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
+                    string: String(localized: "Commit Details"), attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(12))])
             } else if row <= detailPRs.count {
                 let pr = detailPRs[row - 1]
                 let label = NSMutableAttributedString(
                     string: String(localized: "Pull Request #\(pr.number)"),
-                    attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: prColor(pr)])
+                    attributes: [.font: NSFont.boldSystemFont(ofSize: TextSize.pt(12)), .foregroundColor: prColor(pr)])
                 if SeenActivity.isUnread(pr, viewer: viewer) {
-                    label.append(NSAttributedString(string: "  ●", attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.systemBlue]))
+                    label.append(NSAttributedString(string: "  ●", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(10)), .foregroundColor: NSColor.systemBlue]))
                 }
                 cell.textField?.attributedStringValue = label
                 cell.toolTip = pr.title
             } else {
                 let f = files[row - 1 - detailPRs.count]
                 let s = NSMutableAttributedString(string: f.status + "  ", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold),
+                    .font: NSFont.monospacedSystemFont(ofSize: TextSize.pt(12), weight: .bold),
                     .foregroundColor: statusColor(f.status),
                 ])
                 let name = f.oldPath.map { "\($0) → \(f.path)" } ?? f.path
-                s.append(NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 12)]))
+                s.append(NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(12))]))
                 cell.textField?.attributedStringValue = s
                 cell.toolTip = name
             }
@@ -410,9 +437,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             return cell
         default:
             let font: NSFont = id == .hash
-                ? .monospacedSystemFont(ofSize: 11, weight: .regular)
-                : .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+                ? .monospacedSystemFont(ofSize: TextSize.pt(11), weight: .regular)
+                : .monospacedDigitSystemFont(ofSize: TextSize.pt(12), weight: .regular)
             let cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? makeTextCell(id, font: font)
+            cell.textField?.font = font   // a reused cell may have been made at another text size
             switch id {
             case .date: cell.textField?.stringValue = dateFormatter.string(from: commit.date)
             case .author:

@@ -39,3 +39,9 @@
 "Dismissed" = "却下";
 "Reviewed" = "レビュー";
 "%lld more on GitHub" = "ほか %lld 件は GitHub で";
+
+/* View menu */
+"View" = "表示";
+"Actual Size" = "実際のサイズ";
+"Bigger" = "拡大";
+"Smaller" = "縮小";
