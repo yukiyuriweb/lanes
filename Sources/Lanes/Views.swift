@@ -913,6 +913,10 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         plain[.link] = nil
         plain[.strikethroughStyle] = nil
         if !marker.isEmpty { out.append(NSAttributedString(string: marker, attributes: plain)) }
+        // Emoji shortcodes in the text only: code keeps them as written, and link targets aren't text.
+        let isCode = run.inlinePresentationIntent?.contains(.code) == true
+            || blocks.contains { if case .codeBlock = $0.kind { return true }; return false }
+        if !isCode { text = Emoji.replacingShortcodes(in: text) }
         out.append(NSAttributedString(string: text, attributes: attrs))
         lastAttrs = plain
     }
