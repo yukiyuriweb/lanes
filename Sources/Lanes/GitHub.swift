@@ -135,24 +135,9 @@ enum GitHub {
     /// The most recently updated pull requests and the signed-in user's login, or nil when `gh` is missing,
     /// not signed in, or the repository isn't on GitHub.
     static func pullRequests(in repo: URL) -> (prs: [PullRequest], viewer: String)? {
-        // Apps launched from Finder don't get the shell's PATH, so look in the usual install locations.
-        guard let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-            .first(where: FileManager.default.isExecutableFile(atPath:))
-        else { return nil }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: gh)
         // gh fills in {owner} and {repo} from the repository in the current directory.
-        p.arguments = ["api", "graphql", "-f", "query=\(query)", "-F", "owner={owner}", "-F", "repo={repo}"]
-        p.currentDirectoryURL = repo
-        p.environment = ProcessInfo.processInfo.environment.merging(["GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"]) { $1 }
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        p.standardInput = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
+        guard let data = gh(["api", "graphql", "-f", "query=\(query)", "-F", "owner={owner}", "-F", "repo={repo}"], in: repo)
+        else { return nil }
 
         struct Response: Decodable {
             struct Data: Decodable {
@@ -167,5 +152,89 @@ enum GitHub {
         guard let response = try? decoder.decode(Response.self, from: data).data, let repository = response.repository
         else { return nil }
         return (repository.pullRequests.nodes, response.viewer.login)
+    }
+
+    /// GitHub's emoji shortcodes, each with the URL of its image, or nil when `gh` can't reach GitHub.
+    static func emojiImages(in repo: URL) -> [String: String]? {
+        gh(["api", "emojis"], in: repo).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+    }
+
+    /// What `gh` prints, or nil if it's missing or fails.
+    private static func gh(_ arguments: [String], in repo: URL) -> Data? {
+        // Apps launched from Finder don't get the shell's PATH, so look in the usual install locations.
+        guard let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+            .first(where: FileManager.default.isExecutableFile(atPath:))
+        else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: gh)
+        p.arguments = arguments
+        p.currentDirectoryURL = repo
+        p.environment = ProcessInfo.processInfo.environment.merging(["GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"]) { $1 }
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return p.terminationStatus == 0 ? data : nil
+    }
+}
+
+/// GitHub's emoji shortcodes (`:+1:`) and the emoji they stand for, so text shows 👍 as GitHub does.
+enum Emoji {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var table: [String: String] = [:]
+
+    /// Fetches the shortcodes through `gh` unless they're already known. Call it off the main thread.
+    static func load(in repo: URL) {
+        guard lock.withLock({ table.isEmpty }), let images = GitHub.emojiImages(in: repo) else { return }
+        let emoji = images.compactMapValues(emoji(fromImage:))
+        lock.withLock { table = emoji }
+    }
+
+    /// `s` with each known `:shortcode:` replaced by its emoji. Unknown ones stay as typed, as on GitHub.
+    static func replacingShortcodes(in s: String) -> String {
+        guard s.contains(":") else { return s }
+        let table = lock.withLock { table }
+        guard !table.isEmpty else { return s }
+        let pattern = try! NSRegularExpression(pattern: ":([a-z0-9_+\\-]+):")
+        var result = ""
+        var rest = s.startIndex
+        for match in pattern.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
+            let range = Range(match.range, in: s)!
+            guard range.lowerBound >= rest, let emoji = table[String(s[Range(match.range(at: 1), in: s)!])] else { continue }
+            result += s[rest..<range.lowerBound] + emoji
+            rest = range.upperBound
+        }
+        return result + s[rest...]
+    }
+
+    /// The emoji an image stands for, from its file name: `.../unicode/1f469-1f4bb.png` is 👩‍💻. GitHub's
+    /// own images, like `octocat`, have no Unicode emoji and give nil.
+    static func emoji(fromImage url: String) -> String? {
+        guard let name = URL(string: url)?.deletingPathExtension().lastPathComponent, url.contains("/unicode/") else { return nil }
+        let scalars = name.split(separator: "-").compactMap { UInt32($0, radix: 16).flatMap(Unicode.Scalar.init) }
+        guard !scalars.isEmpty else { return nil }
+        // The names leave out joiners and variation selectors; put them back so the sequence draws as one emoji.
+        let regional: ClosedRange<UInt32> = 0x1F1E6...0x1F1FF, modifier: ClosedRange<UInt32> = 0x1F3FB...0x1F3FF
+        let tag: ClosedRange<UInt32> = 0xE0020...0xE007F, keycap: UInt32 = 0x20E3, presentation: UInt32 = 0xFE0F
+        var s = String.UnicodeScalarView()
+        for (i, scalar) in scalars.enumerated() {
+            let v = scalar.value
+            // Flags (pairs of letters, or tag sequences), skin tones and keycaps attach without a joiner.
+            if i > 0, !(v == keycap || v == presentation || modifier.contains(v) || tag.contains(v)
+                        || (regional.contains(v) && regional.contains(scalars[i - 1].value))) {
+                s.append("\u{200D}")
+            }
+            s.append(scalar)
+            // Symbols like ❤ (U+2764) or ♀ are text by default; GitHub shows them as emoji.
+            let next = i + 1 < scalars.count ? scalars[i + 1].value : nil
+            if !scalar.properties.isEmojiPresentation, !tag.contains(v), v != keycap, v != presentation,
+               !(next.map { $0 == presentation || modifier.contains($0) } ?? false) {
+                s.append("\u{FE0F}")
+            }
+        }
+        return String(s)
     }
 }

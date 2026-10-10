@@ -222,6 +222,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         let prToken = prToken
         loadingPRs = true
         Task.detached {
+            Emoji.load(in: repo)   // first, so the PRs show :+1: as 👍 from the start
             let prs = GitHub.pullRequests(in: repo)
             await MainActor.run {
                 guard prToken == self.prToken, repo == self.repo else { return }
