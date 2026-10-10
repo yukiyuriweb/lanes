@@ -667,7 +667,10 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
     var details = "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))"
     let unresolved = pr.unresolvedThreads
-    if unresolved > 0 {
+    if pr.reviewThreads.hidden > 0 {
+        // Only the first threads were fetched, so the count is a lower bound, as in the graph's badge.
+        details += " · " + String(localized: "\(unresolved)+ unresolved threads")
+    } else if unresolved > 0 {
         details += " · " + (unresolved == 1 ? String(localized: "1 unresolved thread") : String(localized: "\(unresolved) unresolved threads"))
     }
     meta.append(NSAttributedString(string: details + "   ", attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
