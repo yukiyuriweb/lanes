@@ -228,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: String(localized: "File"))
         fileMenu.addItem(withTitle: String(localized: "Open…"), action: #selector(openDocument(_:)), keyEquivalent: "o")
         fileMenu.addItem(withTitle: String(localized: "Reload"), action: #selector(MainWindowController.reload(_:)), keyEquivalent: "r")
+        fileMenu.addItem(withTitle: String(localized: "Ask Codex to Review…"), action: #selector(MainWindowController.askCodexToReview(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: String(localized: "Close Window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = fileMenu

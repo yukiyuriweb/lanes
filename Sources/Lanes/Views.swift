@@ -292,6 +292,25 @@ extension NSAttributedString.Key {
     static let pill = NSAttributedString.Key("LanesPill")
 }
 
+/// Links are styled where they're made (`linkStyle`), since the text pane draws them as they are; this lets
+/// the Codex pill keep its own colors.
+let linkStyle: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue]
+
+/// The link of the "Ask Codex to review" pill: `lanes://codex-review?pr=<PR URL>`.
+enum CodexReviewLink {
+    static func url(for pr: String) -> URL? {
+        var c = URLComponents(string: "lanes://codex-review")
+        c?.queryItems = [URLQueryItem(name: "pr", value: pr)]
+        return c?.url
+    }
+
+    /// The PR URL if `link` is a pill's link.
+    static func pullRequest(from link: Any) -> String? {
+        guard let url = link as? URL, url.scheme == "lanes", url.host == "codex-review" else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "pr" }?.value
+    }
+}
+
 /// Draws `.pill` text on its rounded background. The label stays text, so it can be copied and VoiceOver reads it.
 final class PillLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
@@ -353,7 +372,7 @@ private final class RichText {
         para.paragraphSpacing = spacing
         for (text, font, color, link) in parts {
             var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: para]
-            if let link { attrs[.link] = URL(string: link) }
+            if let link { attrs[.link] = URL(string: link); attrs.merge(linkStyle) { $1 } }
             result.append(NSAttributedString(string: text, attributes: attrs))
         }
         // The newline ends the paragraph, so it carries the same layout (and boxes) as its text.
@@ -566,10 +585,23 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
     meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
                                    attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
-    meta.append(NSAttributedString(string: String(localized: "Open on GitHub"), attributes: [.font: body, .link: URL(string: pr.url) as Any]))
+    meta.append(NSAttributedString(string: String(localized: "Open on GitHub"),
+                                   attributes: [.font: body, .link: URL(string: pr.url) as Any].merging(linkStyle) { $1 }))
+    if pr.state == "OPEN" {
+        // A button-like pill; the space before it is kerned to make room for the pill's left padding.
+        meta.append(NSAttributedString(string: "  ", attributes: [.font: body, .kern: pillPadding(bold).x]))
+        let label = String(localized: "Ask Codex to review").replacingOccurrences(of: " ", with: "\u{00A0}")   // one line
+        let button = NSMutableAttributedString(attributedString: pill(label, color: .systemBlue, font: bold))
+        // A link, so VoiceOver offers it as one and can press it; the controller handles the click.
+        button.addAttributes([.link: CodexReviewLink.url(for: pr.url) as Any,
+                              .toolTip: String(localized: "Comment “@codex review” on this pull request")],
+                             range: NSRange(location: 0, length: button.length))
+        meta.append(button)
+    }
     doc.header([(pr.title + " ", .labelColor), ("#\(pr.number)", .secondaryLabelColor)], meta: meta) { style in
         // Room for the pill's left padding, and lines tall enough to hold the pill, which is drawn within them.
         style.firstLineHeadIndent = pillPadding(bold).x
+        style.headIndent = pillPadding(bold).x   // for the Codex pill, should it wrap
         style.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
         style.lineSpacing = pillPadding(bold).y * 2
     }
@@ -912,6 +944,7 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         plain[.backgroundColor] = nil
         plain[.link] = nil
         plain[.strikethroughStyle] = nil
+        if attrs[.link] != nil { attrs.merge(linkStyle) { $1 } }
         if !marker.isEmpty { out.append(NSAttributedString(string: marker, attributes: plain)) }
         // Emoji shortcodes in the text only: code keeps them as written, and link targets aren't text.
         let isCode = run.inlinePresentationIntent?.contains(.code) == true

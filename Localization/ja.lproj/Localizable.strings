@@ -5,6 +5,7 @@
 "File" = "ファイル";
 "Open…" = "開く…";
 "Reload" = "再読み込み";
+"Ask Codex to Review…" = "Codex にレビューを依頼…";
 "Close Window" = "ウインドウを閉じる";
 "Edit" = "編集";
 "Copy" = "コピー";
@@ -40,6 +41,14 @@
 "Dismissed" = "却下";
 "Reviewed" = "レビュー";
 "%lld more on GitHub" = "ほか %lld 件は GitHub で";
+"Ask Codex to review" = "Codex にレビューを依頼";
+"Comment “@codex review” on this pull request" = "このプルリクエストに「@codex review」とコメントします";
+"Ask Codex to review pull request #%lld?" = "プルリクエスト #%lld のレビューを Codex に依頼しますか？";
+"This posts the comment “@codex review” on GitHub." = "GitHub に「@codex review」というコメントを投稿します。";
+"Post Comment" = "コメントを投稿";
+"Cancel" = "キャンセル";
+"Couldn’t post the comment" = "コメントを投稿できませんでした";
+"Check that the gh command is installed and signed in to GitHub." = "gh コマンドがインストールされていて、GitHub にサインインしているか確認してください。";
 
 /* View menu */
 "View" = "表示";

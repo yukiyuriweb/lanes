@@ -159,6 +159,11 @@ enum GitHub {
         gh(["api", "emojis"], in: repo).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
     }
 
+    /// Posts `body` as a comment on the pull request at `url`; false if it couldn't.
+    static func comment(_ body: String, on url: String, in repo: URL) -> Bool {
+        gh(["pr", "comment", url, "--body", body], in: repo) != nil
+    }
+
     /// What `gh` prints, or nil if it's missing or fails.
     private static func gh(_ arguments: [String], in repo: URL) -> Data? {
         // Apps launched from Finder don't get the shell's PATH, so look in the usual install locations.
