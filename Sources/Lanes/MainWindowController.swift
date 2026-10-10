@@ -13,7 +13,7 @@ private extension NSUserInterfaceItemIdentifier {
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let commitTable = NSTableView()
     private let fileTable = NSTableView()
-    private let textView: NSTextView
+    private let textView: PaneTextView
     private let textScroll: NSScrollView
     private let mainSplit = NSSplitView()
     private let detailSplit = NSSplitView()
@@ -53,6 +53,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var prToken = 0
     private var loadingHistory = false { didSet { updateSpinner() } }
     private var loadingPRs = false { didSet { updateSpinner() } }
+    /// Pull requests (by URL) a "@codex review" comment is being posted on.
+    private var postingReviews: Set<String> = [] { didSet { updateSpinner() } }
     /// What the text pane shows (a PR, a summary, a diff), so drawing the same thing again, as a reload or a
     /// new text size does, can keep the scroll position. Nil while it shows nothing.
     private var shownItem: String?
@@ -69,7 +71,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     init() {
         // TextKit 1: PR text uses text tables and blocks, which TextKit 2 can't lay out.
-        textView = NSTextView(usingTextLayoutManager: false)
+        textView = PaneTextView(usingTextLayoutManager: false)
         textView.textContainer?.replaceLayoutManager(PillLayoutManager())
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
@@ -88,6 +90,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         NotificationCenter.default.addObserver(forName: TextSize.didChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTextSize() }
         }
+        textView.onCodexReview = { [weak self] url in self?.requestCodexReview(url) }
         textScroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: textScroll.contentView,
                                                queue: .main) { [weak self] _ in
@@ -234,7 +237,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }
 
     private func updateSpinner() {
-        if loadingHistory || loadingPRs { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        if loadingHistory || loadingPRs || !postingReviews.isEmpty { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
     }
 
     private func apply(pullRequests prs: [PullRequest]) {
@@ -362,6 +365,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
         textToken += 1
         setText(renderPullRequest(pr, dateFormatter: dateFormatter), item: "pr \(pr.url)", wraps: true)
+    }
+
+    /// Comments "@codex review" on the pull request at `url`, after the user confirms, then reloads to show it.
+    private func requestCodexReview(_ url: String) {
+        guard let repo, let window, !postingReviews.contains(url),
+              let pr = pullRequests.values.joined().first(where: { $0.url == url }) else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Ask Codex to review pull request #\(pr.number)?")
+        alert.informativeText = String(localized: "This posts the comment “@codex review” on GitHub.")
+        alert.addButton(withTitle: String(localized: "Post Comment"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            self.postingReviews.insert(url)
+            Task.detached {
+                let posted = GitHub.comment("@codex review", on: url, in: repo)
+                await MainActor.run {
+                    self.postingReviews.remove(url)
+                    guard repo == self.repo else { return }
+                    if posted { return self.reload() }
+                    let failed = NSAlert()
+                    failed.messageText = String(localized: "Couldn’t post the comment")
+                    failed.informativeText = String(localized: "Check that the gh command is installed and signed in to GitHub.")
+                    failed.beginSheetModal(for: window)
+                }
+            }
+        }
     }
 
     /// Redraws everything at the new text size, keeping the selection and what the text pane shows.

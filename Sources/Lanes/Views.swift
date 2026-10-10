@@ -290,6 +290,30 @@ final class RoundedBlock: NSTextBlock {
 extension NSAttributedString.Key {
     /// Text drawn on a rounded pill of this color (an `NSColor`) by `PillLayoutManager`, like GitHub's state labels.
     static let pill = NSAttributedString.Key("LanesPill")
+    /// Text that asks Codex to review the pull request at this URL (a `String`) when clicked.
+    static let codexReview = NSAttributedString.Key("LanesCodexReview")
+}
+
+/// The text pane. Clicking `.codexReview` text calls `onCodexReview`; everything else behaves as usual.
+final class PaneTextView: NSTextView {
+    var onCodexReview: ((String) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if let url = codexReviewURL(at: convert(event.locationInWindow, from: nil)) {
+            onCodexReview?(url)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    private func codexReviewURL(at point: NSPoint) -> String? {
+        guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else { return nil }
+        let p = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyph = layoutManager.glyphIndex(for: p, in: textContainer)
+        guard layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer).contains(p)
+        else { return nil }
+        return textStorage.attribute(.codexReview, at: layoutManager.characterIndexForGlyph(at: glyph), effectiveRange: nil) as? String
+    }
 }
 
 /// Draws `.pill` text on its rounded background. The label stays text, so it can be copied and VoiceOver reads it.
@@ -567,9 +591,20 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
                                    attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
     meta.append(NSAttributedString(string: String(localized: "Open on GitHub"), attributes: [.font: body, .link: URL(string: pr.url) as Any]))
+    if pr.state == "OPEN" {
+        // A button-like pill; the space before it is kerned to make room for the pill's left padding.
+        meta.append(NSAttributedString(string: "  ", attributes: [.font: body, .kern: pillPadding(bold).x]))
+        let label = String(localized: "Ask Codex to review").replacingOccurrences(of: " ", with: "\u{00A0}")   // one line
+        let button = NSMutableAttributedString(attributedString: pill(label, color: .systemBlue, font: bold))
+        button.addAttributes([.codexReview: pr.url, .cursor: NSCursor.pointingHand,
+                              .toolTip: String(localized: "Comment “@codex review” on this pull request")],
+                             range: NSRange(location: 0, length: button.length))
+        meta.append(button)
+    }
     doc.header([(pr.title + " ", .labelColor), ("#\(pr.number)", .secondaryLabelColor)], meta: meta) { style in
         // Room for the pill's left padding, and lines tall enough to hold the pill, which is drawn within them.
         style.firstLineHeadIndent = pillPadding(bold).x
+        style.headIndent = pillPadding(bold).x   // for the Codex pill, should it wrap
         style.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
         style.lineSpacing = pillPadding(bold).y * 2
     }

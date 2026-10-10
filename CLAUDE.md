@@ -25,6 +25,7 @@ Lanes is a read-only, native macOS viewer for Git history (Swift + AppKit, no de
 - **Diff a root commit against the empty tree from `git hash-object -t tree /dev/null`**, not a hard-coded SHA-1 ID, so SHA-256 repositories work.
 - **Add `HEAD` to `git log` only if it resolves.** An unborn HEAD makes the whole command fail.
 - **Pull requests come from the `gh` CLI** (`GitHub.pullRequests`), fetched apart from the history so the graph never waits on the network. When `gh` is missing, signed out, or the repository isn't on GitHub, show no PRs rather than an error. Like git, never run it on the main thread.
+- The only write Lanes makes anywhere is the "@codex review" PR comment (`GitHub.comment`), posted after a confirmation sheet.
 - `GraphLayout.compute` expects commits ordered children before parents (`--date-order`).
 
 ## Verifying changes
