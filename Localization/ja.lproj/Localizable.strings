@@ -33,8 +33,8 @@
 "Merged" = "マージ済み";
 "Closed" = "クローズ";
 "Open on GitHub" = "GitHub で開く";
-"Conversation" = "会話";
-"Review Threads" = "レビュースレッド";
+"1 unresolved thread" = "未解決のスレッド 1 件";
+"%lld unresolved threads" = "未解決のスレッド %lld 件";
 "Resolved" = "解決済み";
 "Approved" = "承認";
 "Changes requested" = "変更を要求";

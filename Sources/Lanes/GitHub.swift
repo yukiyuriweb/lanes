@@ -12,6 +12,7 @@ struct PullRequest: Decodable {
     }
 
     struct Review: Decodable {
+        let id: String
         let author: Author?
         let state: String   // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
         let body: String
@@ -19,9 +20,12 @@ struct PullRequest: Decodable {
     }
 
     struct Comment: Decodable {
+        struct Review: Decodable { let id: String }
         let author: Author?
         let body: String
         let createdAt: Date
+        /// The review a thread comment was posted in; nil for the PR's own comments.
+        let pullRequestReview: Review?
     }
 
     struct Thread: Decodable {
@@ -32,6 +36,8 @@ struct PullRequest: Decodable {
         let comments: Nodes<Comment>
         /// The newest comment, which the first page of `comments` may not reach.
         let latestComment: Nodes<Comment>?
+        /// The review that started the thread.
+        var reviewID: String? { comments.nodes.first?.pullRequestReview?.id }
     }
 
     let number: Int
@@ -119,11 +125,12 @@ enum GitHub {
               nodes {
                 number title url state isDraft headRefName baseRefName headRefOid headRepository { url } mergeCommit { oid }
                 reviewDecision author { login } createdAt body
-                reviews(last: 50) { totalCount nodes { author { login } state body submittedAt } }
+                reviews(last: 50) { totalCount nodes { id author { login } state body submittedAt } }
                 comments(last: 100) { totalCount nodes { author { login } body createdAt } }
                 reviewThreads(first: 50) {
                   totalCount
-                  nodes { isResolved path line originalLine comments(first: 30) { totalCount nodes { author { login } body createdAt } }
+                  nodes { isResolved path line originalLine
+                          comments(first: 30) { totalCount nodes { author { login } body createdAt pullRequestReview { id } } }
                           latestComment: comments(last: 1) { nodes { author { login } body createdAt } } }
                 }
               }
