@@ -10,10 +10,11 @@ private extension NSUserInterfaceItemIdentifier {
 }
 
 @MainActor
-final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate,
+                                  NSTextViewDelegate, NSMenuItemValidation {
     private let commitTable = NSTableView()
     private let fileTable = NSTableView()
-    private let textView: PaneTextView
+    private let textView: NSTextView
     private let textScroll: NSScrollView
     private let mainSplit = NSSplitView()
     private let detailSplit = NSSplitView()
@@ -71,7 +72,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     init() {
         // TextKit 1: PR text uses text tables and blocks, which TextKit 2 can't lay out.
-        textView = PaneTextView(usingTextLayoutManager: false)
+        textView = NSTextView(usingTextLayoutManager: false)
         textView.textContainer?.replaceLayoutManager(PillLayoutManager())
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
@@ -90,7 +91,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         NotificationCenter.default.addObserver(forName: TextSize.didChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTextSize() }
         }
-        textView.onCodexReview = { [weak self] url in self?.requestCodexReview(url) }
         textScroll.contentView.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: textScroll.contentView,
                                                queue: .main) { [weak self] _ in
@@ -147,6 +147,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileScroll.hasVerticalScroller = true
 
         textView.isEditable = false
+        textView.delegate = self
+        // Links bring their own colors (`linkStyle`), so the Codex pill can look like a button.
+        textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
         textView.isRichText = false
         textView.font = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
         textView.textContainerInset = NSSize(width: 24, height: 20)
@@ -365,6 +368,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
         textToken += 1
         setText(renderPullRequest(pr, dateFormatter: dateFormatter), item: "pr \(pr.url)", wraps: true)
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let pr = CodexReviewLink.pullRequest(from: link) else { return false }   // false: open it as usual
+        requestCodexReview(pr)
+        return true
+    }
+
+    /// The open pull request the text pane shows, if any.
+    private var shownOpenPR: PullRequest? {
+        let row = fileTable.selectedRow
+        return row >= 0 && row < detailPRs.count && detailPRs[row].state == "OPEN" ? detailPRs[row] : nil
+    }
+
+    /// The menu command, so the request can be made from the keyboard too.
+    @objc func askCodexToReview(_ sender: Any?) {
+        if let pr = shownOpenPR { requestCodexReview(pr.url) }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action != #selector(askCodexToReview(_:)) || (shownOpenPR.map { !postingReviews.contains($0.url) } ?? false)
     }
 
     /// Comments "@codex review" on the pull request at `url`, after the user confirms, then reloads to show it.
