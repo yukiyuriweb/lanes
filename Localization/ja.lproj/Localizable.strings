@@ -23,6 +23,7 @@
 "Commit Details" = "コミット詳細";
 "Not a Git repository" = "Git リポジトリではありません";
 "Choose a Git repository folder" = "Git リポジトリのフォルダを選択";
+"Loading…" = "読み込み中…";
 
 /* Pull requests */
 "Pull Request #%lld" = "プルリクエスト #%lld";
