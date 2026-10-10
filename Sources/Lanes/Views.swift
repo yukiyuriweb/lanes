@@ -290,6 +290,33 @@ final class RoundedBlock: NSTextBlock {
 extension NSAttributedString.Key {
     /// Text drawn on a rounded pill of this color (an `NSColor`) by `PillLayoutManager`, like GitHub's state labels.
     static let pill = NSAttributedString.Key("LanesPill")
+    /// The first line of an event on a PR's timeline; `PillLayoutManager` draws this `TimelineIcon` left of it.
+    static let timelineIcon = NSAttributedString.Key("LanesTimelineIcon")
+}
+
+/// An event's icon on a PR's timeline: a symbol on a circle, centered `x` points into the text container.
+final class TimelineIcon: NSObject {
+    let symbol: String, tint: NSColor, fill: NSColor, x: CGFloat, size: CGFloat
+
+    init(symbol: String, tint: NSColor, fill: NSColor, x: CGFloat, size: CGFloat) {
+        (self.symbol, self.tint, self.fill, self.x, self.size) = (symbol, tint, fill, x, size)
+    }
+
+    func draw(centeredAt c: NSPoint) {
+        let circle = NSBezierPath(ovalIn: NSRect(x: c.x - size / 2, y: c.y - size / 2, width: size, height: size))
+        // The background first, so a translucent fill still hides the line behind the icon.
+        NSColor.textBackgroundColor.setFill()
+        circle.fill()
+        fill.setFill()
+        circle.fill()
+        let config = NSImage.SymbolConfiguration(pointSize: size * 0.45, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        else { return }
+        let s = image.size
+        image.draw(in: NSRect(x: c.x - s.width / 2, y: c.y - s.height / 2, width: s.width, height: s.height),
+                   from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
 }
 
 /// Links are styled where they're made (`linkStyle`), since the text pane draws them as they are; this lets
@@ -333,6 +360,24 @@ final class PillLayoutManager: NSLayoutManager {
             color.setFill()
             NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
         }
+        drawTimeline(at: origin)
+    }
+
+    /// A PR's timeline, like GitHub's: one line from the first event's icon to the end, with each event's icon on it.
+    private func drawTimeline(at origin: NSPoint) {
+        guard let storage = textStorage, numberOfGlyphs > 0 else { return }
+        var icons: [(y: CGFloat, icon: TimelineIcon)] = []
+        storage.enumerateAttribute(.timelineIcon, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let icon = value as? TimelineIcon else { return }
+            let line = lineFragmentUsedRect(forGlyphAt: glyphIndexForCharacter(at: range.location), effectiveRange: nil)
+            icons.append((origin.y + line.midY, icon))
+        }
+        guard let first = icons.first else { return }
+        let x = origin.x + first.icon.x
+        let end = origin.y + lineFragmentRect(forGlyphAt: numberOfGlyphs - 1, effectiveRange: nil).maxY
+        NSColor.separatorColor.setFill()
+        NSRect(x: x - 1, y: first.y, width: 2, height: end - first.y).fill()
+        for (y, icon) in icons { icon.draw(centeredAt: NSPoint(x: x, y: y)) }
     }
 }
 
@@ -366,42 +411,39 @@ private final class RichText {
     let bold = NSFont.boldSystemFont(ofSize: TextSize.pane(12))
     let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .regular)
 
-    func line(_ parts: [(String, NSFont, NSColor, String?)], in boxes: [NSTextBlock] = [], spacing: CGFloat = 0) {
+    /// A paragraph; `icon` makes it the first line of an event on a timeline.
+    func line(_ parts: [(String, NSFont, NSColor, String?)], in boxes: [NSTextBlock] = [], spacing: CGFloat = 0,
+              icon: TimelineIcon? = nil) {
         let para = NSMutableParagraphStyle()
         para.textBlocks = boxes
         para.paragraphSpacing = spacing
         for (text, font, color, link) in parts {
             var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: para]
+            if let icon { attrs[.timelineIcon] = icon }
             if let link { attrs[.link] = URL(string: link); attrs.merge(linkStyle) { $1 } }
             result.append(NSAttributedString(string: text, attributes: attrs))
         }
         // The newline ends the paragraph, so it carries the same layout (and boxes) as its text.
         result.append(NSAttributedString(string: "\n", attributes: [.font: body, .paragraphStyle: para]))
     }
-    /// A section heading with a rule under it; `indented` lines it up with the thread cards it heads.
-    func section(_ title: String, indented: Bool = false) {
-        gap()
-        var boxes = [ruleBelow()]
-        if indented {
-            // A box's own margin would move the text but not the rule, so an invisible box provides the indent.
-            let indent = NSTextBlock()
-            indent.setValue(100, type: .percentageValueType, for: .width)
-            indent.setWidth(TextSize.pane(24), type: .absoluteValueType, for: .padding, edge: .minX)
-            boxes.insert(indent, at: 0)
-        }
-        line([(title, .boldSystemFont(ofSize: TextSize.pane(14)), .labelColor, nil)], in: boxes)
+    /// An invisible box that moves its paragraphs `width` points in.
+    func indent(_ width: CGFloat) -> NSTextBlock {
+        let b = NSTextBlock()
+        b.setValue(100, type: .percentageValueType, for: .width)
+        b.setWidth(width, type: .absoluteValueType, for: .padding, edge: .minX)
+        return b
     }
     /// Space below a card; the table's own bottom margin isn't applied between adjacent tables.
     func gap() {
         result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: TextSize.pane(14))]))
     }
-    /// A card with `rows` rows (a header, then posts or comments); thread cards sit one level in.
-    func card(rows: Int, indented: Bool = false) -> CardTable {
+    /// A card with `rows` rows (a header, then posts or comments), `indent` points in.
+    func card(rows: Int, indent: CGFloat = 0) -> CardTable {
         let t = CardTable()
         t.numberOfColumns = 1
         t.rows = rows
         t.setValue(100, type: .percentageValueType, for: .width)
-        if indented { t.setWidth(TextSize.pane(24), type: .absoluteValueType, for: .margin, edge: .minX) }
+        if indent > 0 { t.setWidth(indent, type: .absoluteValueType, for: .margin, edge: .minX) }
         return t
     }
     func row(_ card: CardTable, _ index: Int, header: Bool = false, padding: CGFloat = 14) -> NSTextTableBlock {
@@ -545,11 +587,27 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
     let body = doc.body, bold = doc.bold
 
     /// Who and when, in a card's header (or above a comment inside a thread card).
-    func byline(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, in boxes: [NSTextBlock], spacing: CGFloat = 0) {
+    func byline(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, in boxes: [NSTextBlock], spacing: CGFloat = 0,
+                icon: TimelineIcon? = nil) {
         var parts: [(String, NSFont, NSColor, String?)] = [(who?.login ?? "ghost", bold, .labelColor, nil)]
         if let what { parts.append(("  " + what.0, bold, what.1, nil)) }
         if let date { parts.append(("  " + dateFormatter.string(from: date), body, .secondaryLabelColor, nil)) }
-        doc.line(parts, in: boxes, spacing: spacing)
+        doc.line(parts, in: boxes, spacing: spacing, icon: icon)
+    }
+    // Everything after the header is one timeline: a line down the left with an icon per event, cards to its right.
+    let iconSize = TextSize.pane(26)
+    let inset = iconSize + TextSize.pane(12)
+    func icon(_ symbol: String, _ tint: NSColor = .secondaryLabelColor, _ fill: NSColor = .labelColor.withAlphaComponent(0.08)) -> TimelineIcon {
+        TimelineIcon(symbol: symbol, tint: tint, fill: fill, x: iconSize / 2, size: iconSize)
+    }
+    /// A review's icon, colored like GitHub's for a verdict.
+    func reviewIcon(_ state: String) -> TimelineIcon {
+        switch state {
+        case "APPROVED": return icon("checkmark", .white, .systemGreen)
+        case "CHANGES_REQUESTED": return icon("exclamationmark", .white, .systemRed)
+        case "DISMISSED": return icon("xmark")
+        default: return icon("eye")
+        }
     }
     // <head repository>/blob/<head branch>/: the fork for a PR from a fork. If the fork is gone, the base
     // repository, taken from https://github.com/<owner>/<repo>/pull/<n>.
@@ -569,22 +627,53 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
             doc.line([(cleaned, body, .labelColor, nil)], in: boxes)
         }
     }
-    /// A card: a header line, then the body (if any).
-    func post(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, _ text: String) {
+    /// An event's card: a header line, then the body (if any).
+    func post(_ who: PullRequest.Author?, _ what: (String, NSColor)?, _ date: Date?, _ text: String, icon: TimelineIcon) {
         let hasBody = !plainText(text).isEmpty
-        let c = doc.card(rows: hasBody ? 2 : 1)
-        byline(who, what, date, in: [doc.row(c, 0, header: true)])
+        let c = doc.card(rows: hasBody ? 2 : 1, indent: inset)
+        byline(who, what, date, in: [doc.row(c, 0, header: true)], icon: icon)
         if hasBody { markdown(text, in: [doc.row(c, 1)]) }
         doc.gap()
     }
+    /// A review thread's card: the file and line, then its comments, or one line if it's resolved.
+    /// With an icon it's an event of its own; without, it belongs to the review above it.
+    func thread(_ t: PullRequest.Thread, indent: CGFloat, icon: TimelineIcon? = nil) {
+        let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
+        let c = doc.card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indent: indent)
+        let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .semibold)
+        if t.isResolved {
+            doc.line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
+                      ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [doc.row(c, 0, header: true)], icon: icon)
+            doc.gap()
+            return
+        }
+        doc.line([(location, mono, .labelColor, nil)], in: [doc.row(c, 0, header: true)], icon: icon)
+        for (i, comment) in t.comments.nodes.enumerated() {
+            let cell = doc.row(c, i + 1)
+            byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pane(6))
+            markdown(comment.body, in: [cell])
+        }
+        if t.comments.hidden > 0 {
+            doc.line([(String(localized: "\(t.comments.hidden) more on GitHub"), body, .secondaryLabelColor, nil)],
+                     in: [doc.row(c, t.comments.nodes.count + 1)])
+        }
+        doc.gap()
+    }
     func more(_ n: Int) {
-        if n > 0 { doc.line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], spacing: 12) }
+        if n > 0 { doc.line([(String(localized: "\(n) more on GitHub"), body, .secondaryLabelColor, nil)], in: [doc.indent(inset)], spacing: 12) }
     }
 
     // The state as a colored pill with who, which branches and when.
     let meta = NSMutableAttributedString(attributedString: pill(prStateName(pr), color: prColor(pr), font: bold))
-    meta.append(NSAttributedString(string: "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))   ",
-                                   attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
+    var details = "  \(pr.author?.login ?? "ghost") · \(pr.headRefName) → \(pr.baseRefName) · \(dateFormatter.string(from: pr.createdAt))"
+    let unresolved = pr.unresolvedThreads
+    if pr.reviewThreads.hidden > 0 {
+        // Only the first threads were fetched, so the count is a lower bound, as in the graph's badge.
+        details += " · " + String(localized: "\(unresolved)+ unresolved threads")
+    } else if unresolved > 0 {
+        details += " · " + (unresolved == 1 ? String(localized: "1 unresolved thread") : String(localized: "\(unresolved) unresolved threads"))
+    }
+    meta.append(NSAttributedString(string: details + "   ", attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]))
     meta.append(NSAttributedString(string: String(localized: "Open on GitHub"),
                                    attributes: [.font: body, .link: URL(string: pr.url) as Any].merging(linkStyle) { $1 }))
     if pr.state == "OPEN" {
@@ -605,53 +694,34 @@ func renderPullRequest(_ pr: PullRequest, dateFormatter: DateFormatter) -> NSAtt
         style.minimumLineHeight = bold.ascender - bold.descender + pillPadding(bold).y * 2
         style.lineSpacing = pillPadding(bold).y * 2
     }
-    post(pr.author, nil, pr.createdAt, pr.body)
+    post(pr.author, nil, pr.createdAt, pr.body, icon: icon("bubble.left"))
 
-    enum Item { case review(PullRequest.Review), comment(PullRequest.Comment) }
+    // A thread shows under the review that started it, as on GitHub, with any later replies inside it. One
+    // whose review wasn't fetched (or is still pending) is an event of its own, at its first comment.
+    var reviewThreads: [String: [PullRequest.Thread]] = [:]
+    var looseThreads: [PullRequest.Thread] = []
+    let submitted = Set(pr.reviews.nodes.filter { $0.submittedAt != nil }.map(\.id))
+    for t in pr.reviewThreads.nodes {
+        if let id = t.reviewID, submitted.contains(id) { reviewThreads[id, default: []].append(t) } else { looseThreads.append(t) }
+    }
+    enum Item { case review(PullRequest.Review), comment(PullRequest.Comment), thread(PullRequest.Thread) }
     let items: [(Date, Item)] =
-        // Replying in a thread creates an empty COMMENTED review; its comment already shows under the thread.
-        pr.reviews.nodes.filter { $0.state != "COMMENTED" || !plainText($0.body).isEmpty }
+        // Replying in a thread creates an empty COMMENTED review; its comment already shows in the thread.
+        pr.reviews.nodes.filter { $0.state != "COMMENTED" || !plainText($0.body).isEmpty || reviewThreads[$0.id] != nil }
             .compactMap { r in r.submittedAt.map { ($0, .review(r)) } } +
-        pr.comments.nodes.map { ($0.createdAt, .comment($0)) }
-    if !items.isEmpty || pr.reviews.hidden + pr.comments.hidden > 0 { doc.section(String(localized: "Conversation")) }
+        pr.comments.nodes.map { ($0.createdAt, .comment($0)) } +
+        looseThreads.compactMap { t in t.comments.nodes.first.map { ($0.createdAt, .thread(t)) } }
     more(pr.reviews.hidden + pr.comments.hidden)   // the oldest ones, since the query takes the latest
     for (date, item) in items.sorted(by: { $0.0 < $1.0 }) {
         switch item {
         case .review(let r):
-            // A review with only inline comments has an empty body; its comments appear under the threads.
-            post(r.author, reviewState(r.state), date, r.body)
+            post(r.author, reviewState(r.state), date, r.body, icon: reviewIcon(r.state))
+            for t in reviewThreads[r.id] ?? [] { thread(t, indent: inset + TextSize.pane(24)) }
         case .comment(let c):
-            post(c.author, nil, date, c.body)
+            post(c.author, nil, date, c.body, icon: icon("bubble.left"))
+        case .thread(let t):
+            thread(t, indent: inset, icon: icon("text.bubble"))
         }
-    }
-
-    let threads = pr.reviewThreads.nodes
-    if !threads.isEmpty {
-        let open = threads.filter { !$0.isResolved }.count
-        // Threads belong to the conversation above, so their heading sits one level in, with them.
-        doc.section(String(localized: "Review Threads") + " (\(open)/\(pr.reviewThreads.totalCount ?? threads.count))", indented: true)
-    }
-    for t in threads {
-        let location = t.path + ((t.line ?? t.originalLine).map { ":\($0)" } ?? "")
-        let c = doc.card(rows: t.isResolved ? 1 : 1 + t.comments.nodes.count + (t.comments.hidden > 0 ? 1 : 0), indented: true)
-        let mono = NSFont.monospacedSystemFont(ofSize: TextSize.pane(12), weight: .semibold)
-        if t.isResolved {
-            doc.line([("✓ ", body, .secondaryLabelColor, nil), (location, mono, .secondaryLabelColor, nil),
-                      ("  " + String(localized: "Resolved"), body, .secondaryLabelColor, nil)], in: [doc.row(c, 0, header: true)])
-            doc.gap()
-            continue
-        }
-        doc.line([(location, mono, .labelColor, nil)], in: [doc.row(c, 0, header: true)])
-        for (i, comment) in t.comments.nodes.enumerated() {
-            let cell = doc.row(c, i + 1)
-            byline(comment.author, nil, comment.createdAt, in: [cell], spacing: TextSize.pane(6))
-            markdown(comment.body, in: [cell])
-        }
-        if t.comments.hidden > 0 {
-            doc.line([(String(localized: "\(t.comments.hidden) more on GitHub"), body, .secondaryLabelColor, nil)],
-                     in: [doc.row(c, t.comments.nodes.count + 1)])
-        }
-        doc.gap()
     }
     more(pr.reviewThreads.hidden)
     return doc.result
