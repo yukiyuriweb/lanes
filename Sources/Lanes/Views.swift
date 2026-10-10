@@ -686,7 +686,7 @@ private func markdownCode(_ s: String) -> String {
 }
 
 /// Removes HTML comments, the HTML tags GitHub renders (but not other angle brackets, as in `x < y` or
-/// `List<String>`), and image markup, and decodes common entities and emoji shortcodes.
+/// `List<String>`), and image markup, and decodes common entities.
 private func stripMarkup(_ s: String) -> String {
     let tags = "a|b|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|relative-time|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul"
     var t = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
@@ -699,7 +699,7 @@ private func stripMarkup(_ s: String) -> String {
     for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
         t = t.replacingOccurrences(of: entity, with: char)
     }
-    return Emoji.replacingShortcodes(in: t)
+    return t
 }
 
 /// Markdown (GitHub-flavored) as styled text. Foundation parses it, but AppKit doesn't lay out its blocks,
@@ -913,6 +913,10 @@ private func renderMarkdown(_ source: String, font: NSFont, container: [NSTextBl
         plain[.link] = nil
         plain[.strikethroughStyle] = nil
         if !marker.isEmpty { out.append(NSAttributedString(string: marker, attributes: plain)) }
+        // Emoji shortcodes in the text only: code keeps them as written, and link targets aren't text.
+        let isCode = run.inlinePresentationIntent?.contains(.code) == true
+            || blocks.contains { if case .codeBlock = $0.kind { return true }; return false }
+        if !isCode { text = Emoji.replacingShortcodes(in: text) }
         out.append(NSAttributedString(string: text, attributes: attrs))
         lastAttrs = plain
     }
