@@ -17,6 +17,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private let textScroll: NSScrollView
     private let mainSplit = NSSplitView()
     private let detailSplit = NSSplitView()
+    /// Spins in the title bar while the history or the pull requests load.
+    private let spinner = NSProgressIndicator()
 
     private(set) var repo: URL?
     var onClose: (() -> Void)?
@@ -49,6 +51,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var loadToken = 0
     /// Bumped on each pull request fetch, so an older fetch can't overwrite a newer one.
     private var prToken = 0
+    private var loadingHistory = false { didSet { updateSpinner() } }
+    private var loadingPRs = false { didSet { updateSpinner() } }
+    /// What the text pane shows (a PR, a summary, a diff), so drawing the same thing again, as a reload or a
+    /// new text size does, can keep the scroll position. Nil while it shows nothing.
+    private var shownItem: String?
+    /// Where the text pane was scrolled to when it last showed `id`.
+    private var lastScroll: (id: String, origin: NSPoint)?
     /// The GitHub login `gh` is signed in as; their own reviews and comments don't make a PR unread.
     private var viewer = ""
 
@@ -158,6 +167,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         mainSplit.autosaveName = "MainSplit"
 
         window?.contentView = mainSplit
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.toolTip = String(localized: "Loading…")
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 32, height: 28))
+        spinner.frame = NSRect(x: 8, y: 6, width: 16, height: 16)
+        spinner.autoresizingMask = [.minYMargin, .maxYMargin]
+        holder.addSubview(spinner)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = holder
+        accessory.layoutAttribute = .trailing
+        window?.addTitlebarAccessoryViewController(accessory)
         window?.layoutIfNeeded()
         if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames MainSplit") == nil {
             mainSplit.setPosition(480, ofDividerAt: 0)
@@ -185,25 +207,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         guard let repo else { return }
         loadToken += 1
         let token = loadToken
+        loadingHistory = true
         Task.detached {
             let commits = Git.log(in: repo, limit: 20000)
             let layout = GraphLayout.compute(commits)
             await MainActor.run {
                 guard token == self.loadToken else { return }
+                self.loadingHistory = false
                 self.apply(commits: commits, layout: layout)
             }
         }
         // Fetched separately so the graph never waits on the network.
         prToken += 1
         let prToken = prToken
+        loadingPRs = true
         Task.detached {
             let prs = GitHub.pullRequests(in: repo)
             await MainActor.run {
                 guard prToken == self.prToken, repo == self.repo else { return }
+                self.loadingPRs = false
                 self.viewer = prs?.viewer ?? ""
                 self.apply(pullRequests: prs?.prs ?? [])
             }
         }
+    }
+
+    private func updateSpinner() {
+        if loadingHistory || loadingPRs { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
     }
 
     private func apply(pullRequests prs: [PullRequest]) {
@@ -268,7 +298,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         fileTable.reloadData()
         fileTable.deselectAll(nil)
         detailTouched = false
-        textView.string = ""
+        clearText()
         guard let commit, let repo else { return }
         let restore = restoreDetail?.hash == commit.hash ? restoreDetail?.item : nil
         Task.detached {
@@ -311,7 +341,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             await MainActor.run {
                 guard token == self.textToken else { return }
                 self.shownDiff = (token, diff)
-                self.setText(colorizeDiff(diff))
+                self.setText(colorizeDiff(diff), item: "diff \(commit.hash) \(file.path)")
             }
         }
     }
@@ -330,7 +360,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             }
         }
         textToken += 1
-        setText(renderPullRequest(pr, dateFormatter: dateFormatter), wraps: true)
+        setText(renderPullRequest(pr, dateFormatter: dateFormatter), item: "pr \(pr.url)", wraps: true)
     }
 
     /// Redraws everything at the new text size, keeping the selection and what the text pane shows.
@@ -356,7 +386,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         }
         if let diff = shownDiff, diff.token == textToken {
             // A loading diff will be drawn at the new size when it arrives.
-            if let text = diff.text { setText(colorizeDiff(text)) }
+            if let text = diff.text, let item = shownItem { setText(colorizeDiff(text), item: item) }
         } else if fileTable.selectedRow >= 0 {
             showDetailRow(fileTable.selectedRow)
         }
@@ -370,13 +400,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
 
     private func showSummary() {
         textToken += 1
-        guard let summary else { return setText(NSAttributedString()) }
-        setText(renderCommit(summary, dateFormatter: dateFormatter), wraps: true)
+        guard let summary else { return clearText() }
+        setText(renderCommit(summary, dateFormatter: dateFormatter), item: "summary \(summary.hash)", wraps: true)
     }
 
     /// Diffs scroll horizontally; prose (summaries, PR conversations) wraps to the pane's width, up to
     /// `proseWidth` so lines stay easy to read however wide the window gets.
-    private func setText(_ text: NSAttributedString, wraps: Bool = false) {
+    /// Showing the `item` the pane last showed keeps its scroll position; anything else starts at the top.
+    private func setText(_ text: NSAttributedString, item: String, wraps: Bool = false) {
+        rememberScroll()
         wrapsText = wraps
         textView.isHorizontallyResizable = !wraps
         textView.textContainer?.widthTracksTextView = false
@@ -387,7 +419,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         }
         textView.textStorage?.setAttributedString(text)
-        textView.scroll(.zero)
+        shownItem = item
+        if let last = lastScroll, last.id == item, let container = textView.textContainer {
+            // Lay the text out first, so the scroll view knows how far down it can go.
+            textView.layoutManager?.ensureLayout(for: container)
+            textView.scroll(last.origin)
+        } else {
+            textView.scroll(.zero)
+        }
+    }
+
+    private func clearText() {
+        rememberScroll()
+        shownItem = nil
+        textView.string = ""
+    }
+
+    private func rememberScroll() {
+        if let shownItem { lastScroll = (shownItem, textScroll.contentView.bounds.origin) }
     }
 
     // MARK: - Table data source / delegate
