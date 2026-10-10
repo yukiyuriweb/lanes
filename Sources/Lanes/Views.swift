@@ -686,7 +686,7 @@ private func markdownCode(_ s: String) -> String {
 }
 
 /// Removes HTML comments, the HTML tags GitHub renders (but not other angle brackets, as in `x < y` or
-/// `List<String>`), and image markup, and decodes common entities.
+/// `List<String>`), and image markup, and decodes common entities and emoji shortcodes.
 private func stripMarkup(_ s: String) -> String {
     let tags = "a|b|br|code|details|div|em|h[1-6]|hr|i|img|kbd|li|ol|p|picture|pre|relative-time|source|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|ul"
     var t = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: "", options: .regularExpression)
@@ -699,7 +699,7 @@ private func stripMarkup(_ s: String) -> String {
     for (entity, char) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
         t = t.replacingOccurrences(of: entity, with: char)
     }
-    return t
+    return Emoji.replacingShortcodes(in: t)
 }
 
 /// Markdown (GitHub-flavored) as styled text. Foundation parses it, but AppKit doesn't lay out its blocks,
