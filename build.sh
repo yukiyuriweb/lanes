@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds Lanes.app into ./build
+# Builds Lanes.app into ./build; with --install, also copies it to ~/Applications
 set -e
 cd "$(dirname "$0")"
 swift build -c release
@@ -49,3 +49,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - "$APP"
 echo "Built $APP"
+
+if [ "$1" = "--install" ]; then
+    mkdir -p ~/Applications
+    rm -rf ~/Applications/Lanes.app
+    cp -R "$APP" ~/Applications/
+    echo "Installed ~/Applications/Lanes.app"
+fi
