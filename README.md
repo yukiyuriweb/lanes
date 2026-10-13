@@ -24,7 +24,7 @@ Lanes is read-only for now: it does not checkout, commit or modify your reposito
 ./build.sh
 ```
 
-This produces `build/Lanes.app`. Move it to `/Applications` if you like.
+This produces `build/Lanes.app`. `./build.sh --install` also copies it to `~/Applications`.
 
 ## Usage
 
