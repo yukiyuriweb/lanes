@@ -202,6 +202,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         repo = top
         window?.title = top.lastPathComponent
         window?.subtitle = top.path
+        // Lets other apps (such as time trackers) read the repository through the Accessibility API.
+        window?.representedURL = top
         commits = []
         rows = []
         pullRequests = [:]
