@@ -12,7 +12,7 @@ Every commit's message, refs, date, author and hash are shown in the list at all
 - Each repository in its own tab (⌘1–⌘9 switch tabs); tabs can be moved into separate windows
 - Written in Swift with AppKit only — no Electron, no dependencies
 
-Lanes is read-only for now: it does not checkout, commit or modify your repository. The one thing it writes is the “@codex review” comment, posted on GitHub after you confirm.
+Lanes leaves your Git repositories untouched. On GitHub, Lanes can post an “@codex review” comment after you confirm.
 
 ## Requirements
 
@@ -38,10 +38,13 @@ The most recent 20,000 commits across all local branches, remote branches and ta
 
 ## GitHub activity
 
-Open **View → GitHub Activity** (⇧⌘A). The timeline starts with today and uses your Mac’s time zone. Use the arrow buttons to browse recent days and ⌘R to refresh. The timeline on the left uses a fixed 00:00–24:00 scale. Each dot marks an event at its local time. The event stream on the right scrolls independently and links to GitHub. Select an hour in the chart to jump to the corresponding events. The summary counts issues, pull requests, reviews, comments, and pushes. Each push counts as one event.
+Open **View → GitHub Activity** (⇧⌘A). The timeline starts with today and uses your Mac’s time zone. Use the arrow buttons or the ← and → keys to browse days, and ⌘R to refresh. The timeline on the left uses a fixed 00:00–24:00 scale. Each dot marks an event at its local time. The event stream on the right scrolls independently and links to GitHub. Select an hour in the chart to jump to the corresponding events. The summary counts issues, pull requests, reviews, comments, and pushes. Each push counts as one event.
 
 The activity window uses the active GitHub.com account in the [GitHub CLI](https://cli.github.com). To connect an account, run `gh auth login --hostname github.com` in Terminal, then reload the window. Private activity depends on the CLI credentials’ access. GitHub’s [Events API](https://docs.github.com/en/rest/activity/events) returns up to 300 events from the past 30 days, with a delay of up to six hours.
 
+Activity is saved per GitHub account in `~/Library/Application Support/Lanes/GitHub Activity` whenever the feed is loaded. The archive includes the event metadata displayed in the app, including accessible private activity. Earlier saved days remain available after they leave GitHub's feed.
+
+Red and blue indicate activity above and below average. The daily summary colors its total, and the timeline shades each hour’s background. The average uses the preceding 28 calendar days with complete coverage, including days with zero events. If fewer than five qualify, it adds the nearest complete days from the following 28 calendar days until it reaches five. The selected day is excluded, and comparison requires five qualifying days. Recent or incomplete periods are shaded only if the events already received exceed the full-period average. Hover over an hour to see its count and average.
 
 ## License
 

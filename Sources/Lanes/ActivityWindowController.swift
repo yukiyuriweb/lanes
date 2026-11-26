@@ -59,6 +59,39 @@ private extension GitHubActivity.Kind {
     }
 }
 
+private extension ActivityComparison.Period.Level {
+    var color: NSColor? {
+        switch self {
+        case .higher: return .systemRed
+        case .lower: return .systemBlue
+        case .usual, .unconfirmed: return nil
+        }
+    }
+}
+
+private extension ActivityComparison.Period {
+    var backgroundTint: NSColor? { level.color?.withAlphaComponent(complete ? 0.15 : 0.09) }
+
+    var formattedAverage: String { average.formatted(.number.precision(.fractionLength(0...1))) }
+}
+
+@MainActor
+private final class ActivityWindow: NSWindow {
+    var moveDay: ((Int) -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        let modifiers: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+        if event.type == .keyDown, event.modifierFlags.intersection(modifiers).isEmpty, let moveDay {
+            switch event.keyCode {
+            case 123: moveDay(-1); return
+            case 124: moveDay(1); return
+            default: break
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor
 final class ActivityWindowController: NSWindowController {
     private let account = NSTextField(labelWithString: "")
@@ -78,7 +111,7 @@ final class ActivityWindowController: NSWindowController {
     private var loading = false
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 800),
+        let window = ActivityWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 800),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = String(localized: "GitHub Activity")
@@ -86,6 +119,10 @@ final class ActivityWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 610, height: 440)
         super.init(window: window)
+        window.moveDay = { [weak self] offset in
+            guard let self, (offset < 0 ? self.previous.isEnabled : self.next.isEnabled) else { return }
+            self.stepDay(by: offset)
+        }
         setUp(window)
         window.center()
         window.setFrameAutosaveName("GitHubActivityWindow")
@@ -138,6 +175,8 @@ final class ActivityWindowController: NSWindowController {
 
         configure(previous, symbol: "chevron.left", label: String(localized: "Previous day"), action: #selector(previousDay))
         configure(next, symbol: "chevron.right", label: String(localized: "Next day"), action: #selector(nextDay))
+        previous.toolTip = "\(String(localized: "Previous day")) (←)"
+        next.toolTip = "\(String(localized: "Next day")) (→)"
         configure(refresh, symbol: "arrow.clockwise", label: String(localized: "Reload"), action: #selector(reload(_:)))
         today.title = String(localized: "Today")
         today.bezelStyle = .rounded
@@ -201,12 +240,12 @@ final class ActivityWindowController: NSWindowController {
         button.setAccessibilityLabel(label)
     }
 
-    @objc private func previousDay() {
-        if let date = calendar.date(byAdding: .day, value: -1, to: day) { changeDay(to: date) }
-    }
+    @objc private func previousDay() { stepDay(by: -1) }
 
-    @objc private func nextDay() {
-        if let date = calendar.date(byAdding: .day, value: 1, to: day) { changeDay(to: date) }
+    @objc private func nextDay() { stepDay(by: 1) }
+
+    private func stepDay(by offset: Int) {
+        if let date = calendar.date(byAdding: .day, value: offset, to: day) { changeDay(to: date) }
     }
 
     @objc private func goToToday() { changeDay(to: Date()) }
@@ -217,10 +256,9 @@ final class ActivityWindowController: NSWindowController {
     }
 
     private func render(resetScroll: Bool) {
-        let current = calendar.startOfDay(for: Date())
-        let retentionStart = calendar.date(byAdding: .day, value: -29, to: current) ?? current
-        let cutoffDay = feed?.cutoff.map { calendar.startOfDay(for: $0) }
-        let earliest = max(retentionStart, cutoffDay ?? retentionStart)
+        let now = Date()
+        let current = calendar.startOfDay(for: now)
+        let earliest = min(current, feed?.history.earliestDate.map { calendar.startOfDay(for: $0) } ?? current)
         // During a reload, keep the selected date until the new feed tells us the available range.
         day = min(calendar.startOfDay(for: day), current)
         if feed != nil { day = max(day, earliest) }
@@ -249,14 +287,23 @@ final class ActivityWindowController: NSWindowController {
         } else if let error {
             render(error)
         } else if let feed {
-            let events = feed.events.filter { calendar.isDate($0.date, inSameDayAs: day) }
-            let summary = DailyActivitySummary(events: events)
+            let events = feed.history.events.filter { calendar.isDate($0.date, inSameDayAs: day) }
+            let comparison = ActivityComparison(day: day, events: events, history: feed.history, calendar: calendar, now: now)
+            let summary = DailyActivitySummary(events: events, comparison: comparison)
             add(summary)
             content.setCustomSpacing(15, after: summary)
-            if cutoffDay == day {
-                notice.stringValue = String(localized: "GitHub’s event limit may hide earlier activity on this day.")
+            let fullDay = calendar.dateInterval(of: .day, for: day).map(feed.history.covers) ?? false
+            switch feed.status {
+            case .cached:
+                notice.stringValue = String(localized: "GitHub unavailable · Showing saved activity")
+            case .unsaved:
+                notice.stringValue = String(localized: "Couldn’t save activity to this Mac.")
+            case .current where !fullDay && day < current:
+                notice.stringValue = String(localized: "Saved activity for this day may be incomplete.")
+            case .current: break
             }
-            add(ActivityTimeline(events: events, calendar: calendar))
+            add(ActivityTimeline(events: events, calendar: calendar, comparison: comparison,
+                                 complete: fullDay))
         }
         window?.contentView?.layoutSubtreeIfNeeded()
         let origin = resetScroll ? NSPoint.zero : previousOrigin
@@ -344,9 +391,10 @@ private func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regul
 
 @MainActor
 private final class DailyActivitySummary: NSView {
-    init(events: [GitHubActivity]) {
+    init(events: [GitHubActivity], comparison: ActivityComparison) {
         super.init(frame: .zero)
-        let total = label(events.count.formatted(), size: 32, weight: .semibold)
+        let total = label(events.count.formatted(), size: 32, weight: .semibold,
+                          color: comparison.daily?.level.color ?? .labelColor)
         total.setAccessibilityLabel(String(localized: "\(events.count) activities"))
         let caption = label(String(localized: "Activities"), size: 12, color: .secondaryLabelColor)
         let count = stack(.vertical, spacing: 1, [total, caption])
@@ -372,18 +420,67 @@ private final class DailyActivitySummary: NSView {
             return tile
         })
         breakdown.distribution = .fillEqually
-        let body = stack(.horizontal, spacing: 12, [count, breakdown])
-        body.alignment = .centerY
-        body.distribution = .fill
+        let overview = stack(.horizontal, spacing: 12, [count, breakdown])
+        overview.alignment = .centerY
+        overview.distribution = .fill
+
+        let comparisonText: String
+        if let daily = comparison.daily {
+            let days = comparison.sampleDays
+            let average = daily.formattedAverage
+            comparisonText = daily.complete
+                ? String(localized: "Daily average \(average) · \(days) days")
+                : String(localized: "Daily average \(average) · \(days) days · Provisional")
+        } else if comparison.sampleDays < ActivityComparison.minimumDays {
+            let days = comparison.sampleDays
+            let minimum = ActivityComparison.minimumDays
+            comparisonText = String(localized: "Comparison days \(days) of \(minimum) needed")
+        } else {
+            comparisonText = String(localized: "No baseline on clock-change days")
+        }
+        let baseline = label(comparisonText, size: 11, color: .secondaryLabelColor)
+        if comparison.daily != nil && comparison.followingDays > 0 {
+            let days = comparison.followingDays
+            let detail = days == 1 ? String(localized: "Includes 1 completed day after the selected date.")
+                : String(localized: "Includes \(days) completed days after the selected date.")
+            baseline.toolTip = comparisonText + "\n" + detail
+        } else {
+            baseline.toolTip = comparisonText
+        }
+        let legend = stack(.horizontal, spacing: 10, [
+            Self.key(String(localized: "Above average"), color: .systemRed),
+            Self.key(String(localized: "Below average"), color: .systemBlue)
+        ])
+        legend.setContentHuggingPriority(.required, for: .horizontal)
+        let footer = stack(.horizontal, spacing: 8, [baseline, NSView(), legend])
+        footer.alignment = .centerY
+
+        let body = stack(.vertical, spacing: 9, [overview, footer])
+        body.alignment = .leading
         body.translatesAutoresizingMaskIntoConstraints = false
         addSubview(body)
         NSLayoutConstraint.activate([
             body.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             body.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             body.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
-            breakdown.trailingAnchor.constraint(equalTo: body.trailingAnchor)
+            body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            overview.widthAnchor.constraint(equalTo: body.widthAnchor),
+            footer.widthAnchor.constraint(equalTo: body.widthAnchor),
+            breakdown.trailingAnchor.constraint(equalTo: overview.trailingAnchor),
+            legend.trailingAnchor.constraint(equalTo: footer.trailingAnchor)
         ])
+    }
+
+    private static func key(_ title: String, color: NSColor) -> NSView {
+        let swatch = NSView()
+        swatch.wantsLayer = true
+        swatch.layer?.backgroundColor = color.withAlphaComponent(0.32).cgColor
+        swatch.layer?.cornerRadius = 3
+        swatch.widthAnchor.constraint(equalToConstant: 10).isActive = true
+        swatch.heightAnchor.constraint(equalToConstant: 10).isActive = true
+        let key = stack(.horizontal, spacing: 4, [swatch, label(title, size: 11, color: .secondaryLabelColor)])
+        key.alignment = .centerY
+        return key
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -400,10 +497,10 @@ private final class DailyActivitySummary: NSView {
 
 @MainActor
 private final class ActivityTimeline: NSView {
-    init(events: [GitHubActivity], calendar: Calendar) {
+    init(events: [GitHubActivity], calendar: Calendar, comparison: ActivityComparison, complete: Bool) {
         super.init(frame: .zero)
-        let stream = ActivityStreamView(events: events, calendar: calendar)
-        let day = DayTimelineView(events: events, calendar: calendar) { [weak stream] hour in
+        let stream = ActivityStreamView(events: events, calendar: calendar, complete: complete)
+        let day = DayTimelineView(events: events, calendar: calendar, comparison: comparison) { [weak stream] hour in
             stream?.jump(to: hour)
         }
         let timelineHeading = label(String(localized: "Timeline"), size: 16, weight: .semibold)
@@ -438,7 +535,7 @@ private final class ActivityTimeline: NSView {
 }
 
 @MainActor
-private final class DayTimelineView: NSView {
+private final class DayTimelineView: NSView, NSViewToolTipOwner {
     private struct Marker {
         let event: GitHubActivity
         let minute: Double
@@ -450,12 +547,16 @@ private final class DayTimelineView: NSView {
     private static let dayHeight = hourHeight * 24 + inset * 2
     private static let countWidth: CGFloat = 50
     private let hours: [[Marker]]
+    private let comparison: ActivityComparison
+    private var tips: [NSView.ToolTipTag: Int] = [:]
     private let onSelectHour: (Int) -> Void
     private var selectedHour: Int?
 
     override var isFlipped: Bool { true }
 
-    init(events: [GitHubActivity], calendar: Calendar, onSelectHour: @escaping (Int) -> Void) {
+    init(events: [GitHubActivity], calendar: Calendar, comparison: ActivityComparison,
+         onSelectHour: @escaping (Int) -> Void) {
+        self.comparison = comparison
         self.onSelectHour = onSelectHour
         var hours = Array(repeating: [Marker](), count: 24)
         for event in events {
@@ -476,9 +577,7 @@ private final class DayTimelineView: NSView {
             button.alignment = .right
             button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
             button.contentTintColor = .controlAccentColor
-            let time = "\(Self.tick(hour))–\(Self.tick(hour + 1))"
-            let countLabel = count == 1 ? String(localized: "1 activity") : String(localized: "\(count) activities")
-            button.toolTip = "\(time) · \(countLabel)"
+            button.toolTip = hourDescription(hour)
             button.setAccessibilityLabel(button.toolTip)
             button.translatesAutoresizingMaskIntoConstraints = false
             addSubview(button)
@@ -497,6 +596,36 @@ private final class DayTimelineView: NSView {
         "\(hour.formatted(.number.precision(.integerLength(2)))):00"
     }
 
+    private func hourDescription(_ hour: Int) -> String {
+        let time = "\(Self.tick(hour))–\(Self.tick(hour + 1))"
+        let count = hours[hour].count
+        let countLabel = count == 1 ? String(localized: "1 activity") : String(localized: "\(count) activities")
+        var parts = [time, countLabel]
+        if let period = comparison.hours[hour] {
+            let average = period.formattedAverage
+            parts.append(String(localized: "Average \(average)"))
+            if !period.complete { parts.append(String(localized: "Provisional")) }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    override func layout() {
+        super.layout()
+        removeAllToolTips()
+        tips.removeAll()
+        for hour in hours.indices where hours[hour].isEmpty && comparison.hours[hour] != nil {
+            let tag = addToolTip(NSRect(x: Self.railX, y: Self.inset + CGFloat(hour) * Self.hourHeight,
+                                       width: bounds.width - Self.railX, height: Self.hourHeight),
+                                 owner: self, userData: nil)
+            tips[tag] = hour
+        }
+    }
+
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
+              userData: UnsafeMutableRawPointer?) -> String {
+        tips[tag].map(hourDescription) ?? ""
+    }
+
     @objc private func selectHour(_ sender: NSButton) {
         selectedHour = sender.tag
         needsDisplay = true
@@ -511,6 +640,13 @@ private final class DayTimelineView: NSView {
         card.stroke()
 
         let rail = Self.railX
+        for (hour, period) in comparison.hours.enumerated() {
+            guard let tint = period?.backgroundTint else { continue }
+            let y = Self.inset + CGFloat(hour) * Self.hourHeight
+            tint.setFill()
+            NSBezierPath(rect: NSRect(x: rail, y: y, width: bounds.width - rail - 5,
+                                      height: Self.hourHeight)).fill()
+        }
         if let selectedHour {
             let y = Self.inset + CGFloat(selectedHour) * Self.hourHeight
             NSColor.controlAccentColor.withAlphaComponent(0.10).setFill()
@@ -560,10 +696,12 @@ private final class ActivityStreamView: NSView {
     private var firstRowByHour: [Int: ActivityRow] = [:]
     private weak var highlighted: ActivityRow?
 
-    init(events: [GitHubActivity], calendar: Calendar) {
+    init(events: [GitHubActivity], calendar: Calendar, complete: Bool) {
         super.init(frame: .zero)
         if events.isEmpty {
-            let empty = NSTextField(wrappingLabelWithString: String(localized: "No tracked activity for this day."))
+            let message = complete ? String(localized: "No tracked activity for this day.")
+                : String(localized: "No events received for this day.")
+            let empty = NSTextField(wrappingLabelWithString: message)
             empty.font = .systemFont(ofSize: 13)
             empty.textColor = .secondaryLabelColor
             empty.alignment = .center
