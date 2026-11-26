@@ -530,6 +530,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 ])
                 let name = f.oldPath.map { "\($0) → \(f.path)" } ?? f.path
                 s.append(NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: TextSize.pt(12))]))
+                // An attributed string without a paragraph style wraps, and the row height is fixed,
+                // so long paths would spill over neighboring rows. Keep one line and elide the middle
+                // of the path, so both its top directory and the file name stay visible.
+                let para = NSMutableParagraphStyle()
+                para.lineBreakMode = .byTruncatingMiddle
+                s.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: s.length))
                 cell.textField?.attributedStringValue = s
                 cell.toolTip = name
             }
