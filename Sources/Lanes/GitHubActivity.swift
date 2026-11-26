@@ -1,7 +1,7 @@
 import Foundation
 
-struct GitHubActivity {
-    enum Kind {
+struct GitHubActivity: Codable {
+    enum Kind: String, Codable {
         case issueOpened, issueClosed, issueReopened
         case pullOpened, pullClosed, pullMerged, pullReopened
         case review, comment, push
@@ -21,6 +21,7 @@ struct GitHubActivity {
         case issues, pullRequests, reviews, comments, pushes
     }
 
+    let id: String
     let kind: Kind
     let date: Date
     let repository: String
@@ -33,10 +34,11 @@ struct GitHubActivity {
 }
 
 struct GitHubActivityFeed {
+    enum Status { case current, cached, unsaved }
+
     let login: String
-    let events: [GitHubActivity]
-    /// The oldest unfiltered event when GitHub's 300-event limit was reached.
-    let cutoff: Date?
+    let history: GitHubActivityHistory
+    let status: Status
 }
 
 enum GitHubActivityError: Error {
@@ -53,14 +55,21 @@ extension GitHub {
         decoder.dateDecodingStrategy = .iso8601
         decoder.keyDecodingStrategy = .convertFromSnakeCase
 
+        struct Account: Decodable { let id: Int64; let login: String }
         guard let user = gh(options + ["user"], in: directory),
-              let account = try? decoder.decode(PullRequest.Author.self, from: user)
+              let account = try? decoder.decode(Account.self, from: user)
         else { return .failure(.accountUnavailable) }
 
+        let store = GitHubActivityStore()
+        let started = Date()
         let endpoint = "users/\(account.login)/events?per_page=100"
         guard let data = gh(options + ["--paginate", "--slurp", endpoint], in: directory),
               let pages = try? decoder.decode([[ActivityEvent]].self, from: data)
-        else { return .failure(.eventsUnavailable) }
+        else {
+            guard let history = try? store.load(accountID: account.id) else { return .failure(.eventsUnavailable) }
+            return .success(GitHubActivityFeed(login: account.login, history: history, status: .cached))
+        }
+        let received = Date()
 
         let events = pages.flatMap { $0 }
         var seen: Set<String> = []
@@ -79,8 +88,14 @@ extension GitHub {
 
         // Visibility filtering can leave fewer than 300 entries even with a full final page.
         let reachedLimit = events.count >= 300 || (pages.count >= 3 && pages.last?.count == 100)
-        let cutoff = reachedLimit ? events.map(\.createdAt).min() : nil
-        return .success(GitHubActivityFeed(login: account.login, events: activities, cutoff: cutoff))
+        // At the cap, sibling events at the oldest timestamp may be missing.
+        let cutoff = reachedLimit ? events.map(\.createdAt).min()?.addingTimeInterval(1) : nil
+        let start = max(cutoff ?? .distantPast, received.addingTimeInterval(-GitHubActivityHistory.retention))
+        let end = started.addingTimeInterval(-GitHubActivityHistory.publicationDelay)
+        let saved = try? store.record(accountID: account.id, events: activities, since: start, through: end)
+        var history = saved?.history ?? GitHubActivityHistory()
+        if saved == nil { history.record(activities, since: start, through: end) }
+        return .success(GitHubActivityFeed(login: account.login, history: history, status: saved?.saved == true ? .current : .unsaved))
     }
 
     /// The events feed can omit PR titles. Ask for each missing title once, across repositories.
@@ -192,7 +207,7 @@ private struct ActivityEvent: Decodable {
         }
         let url = [destination, item?.htmlUrl].compactMap { $0.flatMap(URL.init(string:)) }
             .first { $0.scheme == "https" && $0.host == "github.com" }
-        return GitHubActivity(kind: kind, date: createdAt, repository: repo.name, title: title,
+        return GitHubActivity(id: id, kind: kind, date: createdAt, repository: repo.name, title: title,
                               number: number, isPullRequest: isPullRequest, url: url ?? itemURL ?? repositoryURL)
     }
 }
