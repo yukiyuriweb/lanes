@@ -171,12 +171,15 @@ enum GitHub {
         gh(["pr", "comment", url, "--body", body], in: repo) != nil
     }
 
-    /// What `gh` prints, or nil if it's missing or fails.
-    private static func gh(_ arguments: [String], in repo: URL) -> Data? {
-        // Apps launched from Finder don't get the shell's PATH, so look in the usual install locations.
-        guard let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+    // Apps launched from Finder don't get the shell's PATH.
+    static var cliPath: String? {
+        ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
             .first(where: FileManager.default.isExecutableFile(atPath:))
-        else { return nil }
+    }
+
+    /// What `gh` prints. GraphQL can emit useful data even when some fields fail.
+    static func gh(_ arguments: [String], in repo: URL, allowPartialOutput: Bool = false) -> Data? {
+        guard let gh = cliPath else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: gh)
         p.arguments = arguments
@@ -189,7 +192,7 @@ enum GitHub {
         do { try p.run() } catch { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return p.terminationStatus == 0 ? data : nil
+        return p.terminationStatus == 0 || (allowPartialOutput && !data.isEmpty) ? data : nil
     }
 }
 

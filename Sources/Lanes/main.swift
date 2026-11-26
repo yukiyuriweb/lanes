@@ -17,6 +17,7 @@ enum Placement {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllers: [MainWindowController] = []
+    private lazy var activityWindow = ActivityWindowController()
     private var receivedOpenRequest = false
     /// Saved windows not restored yet at launch; saved again along with the open ones.
     private var pendingWindows: [SavedWindow] = []
@@ -204,6 +205,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(data, forKey: "openWindows")
     }
 
+    @objc func reloadCurrentWindow(_ sender: Any?) {
+        switch NSApp.keyWindow?.windowController {
+        case let controller as MainWindowController: controller.reload(sender)
+        case let controller as ActivityWindowController: controller.reload(sender)
+        default: break
+        }
+    }
+
+    @objc func showGitHubActivity(_ sender: Any?) { activityWindow.showWindow(sender) }
+
     @objc func bigger(_ sender: Any?) { TextSize.step(1) }
     @objc func smaller(_ sender: Any?) { TextSize.step(-1) }
     @objc func actualSize(_ sender: Any?) { TextSize.reset() }
@@ -227,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let fileMenu = NSMenu(title: String(localized: "File"))
         fileMenu.addItem(withTitle: String(localized: "Open…"), action: #selector(openDocument(_:)), keyEquivalent: "o")
-        fileMenu.addItem(withTitle: String(localized: "Reload"), action: #selector(MainWindowController.reload(_:)), keyEquivalent: "r")
+        fileMenu.addItem(withTitle: String(localized: "Reload"), action: #selector(reloadCurrentWindow(_:)), keyEquivalent: "r")
         fileMenu.addItem(withTitle: String(localized: "Ask Codex to Review…"), action: #selector(MainWindowController.askCodexToReview(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: String(localized: "Close Window"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -247,6 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let equals = viewMenu.addItem(withTitle: String(localized: "Bigger"), action: #selector(bigger(_:)), keyEquivalent: "=")
         equals.isHidden = true
         equals.allowsKeyEquivalentWhenHidden = true
+        viewMenu.addItem(.separator())
+        let activity = viewMenu.addItem(withTitle: String(localized: "GitHub Activity"), action: #selector(showGitHubActivity(_:)), keyEquivalent: "a")
+        activity.keyEquivalentModifierMask = [.command, .shift]
+        activity.target = self
         main.addItem(withTitle: "", action: nil, keyEquivalent: "").submenu = viewMenu
 
         let windowMenu = NSMenu(title: String(localized: "Window"))
